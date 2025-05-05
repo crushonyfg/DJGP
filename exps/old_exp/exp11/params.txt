@@ -1,0 +1,9 @@
+L = 3   # 不同数据集生成次数
+T = 1   # DeepGP/DJGP/SIR 循环次数
+N = 2000
+T_param = 300
+D = 20
+caseno = 5
+M = 100
+K = 2
+change data generation with random fourier features

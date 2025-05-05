@@ -1,0 +1,10 @@
+L = 3   # 不同数据集生成次数
+T = 1   # DeepGP/DJGP/SIR 循环次数
+N = 2000
+T_param = 100
+D = 20
+caseno = 5
+M = 100
+K = 3
+new data generation, but false latent dimension K=3
+MC = 5
