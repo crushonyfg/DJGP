@@ -41,6 +41,7 @@ def apply_sir_reduction(X_train, Y_train, X_test, args):
     X_test_np = X_test.cpu().numpy()
     
     # 初始化并训练SIR模型
+    # sir = SIR(H=args.sir_H, K=args.sir_K, estdim=True, threshold=0.5)
     sir = SIR(H=args.sir_H, K=args.sir_K)
     sir.fit(X_train_np, Y_train_np)
     
@@ -63,81 +64,218 @@ def load_dataset(folder_name):
         dataset = pickle.load(f)
     return dataset
 
+# class SIR:
+#     def __init__(self, H, K, estdim=0, Cn=1):
+#         self.H = H
+#         self.K = K
+#         self.estdim = estdim
+#         self.Cn = Cn
+
+#     def fit(self, X, Y):
+#         self.X = X
+#         self.Y = Y
+#         self.mean_x = np.mean(X, axis=0)  # 计算样本均值
+#         self.sigma_x = np.cov(X, rowvar=False)  # 计算样本协方差矩阵
+#         self.Z = np.matmul(X - np.tile(self.mean_x, (X.shape[0], 1)),
+#                            fractional_matrix_power(self.sigma_x, -0.5))  # 标准化后的数据阵
+#         n, p = self.Z.shape
+#         if self.Y.ndim == 1:  # 判断响应变量Y的维度
+#             self.Y = self.Y.reshape(-1, 1)
+#         ny, py = self.Y.shape
+#         W = np.ones((n, 1)) / n
+#         nw, pw = W.shape
+#         # 输入数据异常判断
+#         if n != ny:
+#             raise ValueError('X and Y must have the same number of samples')
+#         elif p == 1:
+#             raise ValueError('X must have at least 2 dimensions')
+#         elif py != 1:
+#             raise ValueError('Y must have only 1 dimension')
+#         # 将y分为H片，c为每个片的样本数
+#         c = np.ones((1, self.H)) * (n // self.H) + np.hstack(
+#             [np.ones(
+#                 (1, n % self.H)), np.zeros((1, self.H - n % self.H))])
+#         cumc = np.cumsum(c)  # 计算切片累计和
+#         # 参照Y的取值从小到大进行排序
+#         temp = np.hstack((self.Z, self.Y, W))
+#         temp = temp[np.argsort(temp[:, p])]
+#         # 提取排序后的z,y,w
+#         z, y, w = temp[:, :p], temp[:, p:p + 1], temp[:, p + 1]
+#         muh = np.zeros((self.H, p))
+#         wh = np.zeros((self.H, 1))  # 每个切片的权重
+#         k = 0  # 初始化切片编号
+#         for i in range(n):
+#             if i >= cumc[k]:  # 如果超过了切片的边界，则换下一个切片
+#                 k += 1
+#             muh[k, :] = muh[k, :] + z[i, :]  # 计算切片内自变量之和
+#             wh[k] = wh[k] + w[i]  # 计算每个切片包含Yi的概率
+#         # 计算每个切片的样本均值,将其作为切片内自变量的取值
+#         muh = muh / (np.tile(wh, (1, p)) * n)
+#         # 加权主成分分析
+#         self.M = np.zeros((p, p))  # 初始化切片 加权协方差矩阵
+#         for i in range(self.H):
+#             self.M = self.M + wh[i] * muh[i, :].reshape(-1, 1) * muh[i, :]
+#         if self.estdim == 0: # 一般情况
+#             self.D, self.V = eigs(A=self.M, k=self.K, which='LM')
+#         else:
+#             """ # 稀疏矩阵情况，待修正
+#             [V D] = np.linalg,eig(full(M))
+#             lambda = np.sort(abs(diag(D)),'descend')
+#             L = np.log(lambda+1) - lambda
+#             G = np.zeros((p,1))
+#             if Cn == 1
+#                 Cn = n^(1/2)
+#             elif Cn == 2
+#             Cn = n^(1/3)
+#             elif Cn == 3:
+#                 Cn = 0.5 * n^0.25
+#             for k in range(p):
+#                 G(k) = n / 2 * sum(L(1:k)) / sum(L) - Cn * k * (k+1) / p
+#             maxG, K = np. max(G)
+#             V, D = eigs(M,K,'lm')
+#             """
+#             pass
+#         return self.V, self.K, self.M, self.D
+#     def transform(self):
+#         hatbeta = np.matmul(fractional_matrix_power(self.sigma_x, -0.5),self.V)
+#         return hatbeta
+
+import numpy as np
+from scipy.linalg import fractional_matrix_power, eigh
+from scipy.sparse.linalg import eigs
+
 class SIR:
-    def __init__(self, H, K, estdim=0, Cn=1):
+    def __init__(self, H, K=None, estdim=False, threshold=0.9, Cn=1):
+        """
+        Sliced Inverse Regression (SIR) for dimensionality reduction.
+
+        Parameters
+        ----------
+        H : int
+            Number of slices.
+        K : int or None
+            Target dimension when estdim=False. If estdim=True, K is determined automatically.
+        estdim : bool
+            Whether to automatically estimate the dimension using cumulative explained variance.
+        threshold : float
+            Variance threshold for automatic dimension selection (e.g., 0.9 for 90%).
+        Cn : float
+            Placeholder for other selection criteria (unused with cumulative variance).
+        """
         self.H = H
         self.K = K
         self.estdim = estdim
+        self.threshold = threshold
         self.Cn = Cn
 
     def fit(self, X, Y):
+        """
+        Fit the SIR model to data.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Predictor data.
+        Y : array-like, shape (n_samples,) or (n_samples, 1)
+            Response data.
+
+        Returns
+        -------
+        V : array, shape (n_features, K)
+            Leading eigenvectors (projection directions).
+        K : int
+            Chosen number of dimensions.
+        M : array, shape (n_features, n_features)
+            SIR covariance matrix.
+        D : array, shape (K,)
+            Leading eigenvalues.
+        """
+        # Store and center X
         self.X = X
         self.Y = Y
-        self.mean_x = np.mean(X, axis=0)  # 计算样本均值
-        self.sigma_x = np.cov(X, rowvar=False)  # 计算样本协方差矩阵
-        self.Z = np.matmul(X - np.tile(self.mean_x, (X.shape[0], 1)),
-                           fractional_matrix_power(self.sigma_x, -0.5))  # 标准化后的数据阵
-        n, p = self.Z.shape
-        if self.Y.ndim == 1:  # 判断响应变量Y的维度
-            self.Y = self.Y.reshape(-1, 1)
-        ny, py = self.Y.shape
+        self.mean_x = np.mean(X, axis=0)
+        self.sigma_x = np.cov(X, rowvar=False)
+
+        # Standardize X
+        Z = (X - self.mean_x) @ fractional_matrix_power(self.sigma_x, -0.5)
+        n, p = Z.shape
+
+        # Ensure Y shape
+        Y = np.asarray(Y)
+        if Y.ndim == 1:
+            Y = Y.reshape(-1, 1)
+        if Y.shape[0] != n or Y.shape[1] != 1:
+            raise ValueError("X and Y must have matching samples, and Y must be 1D.")
+
+        # Weights
         W = np.ones((n, 1)) / n
-        nw, pw = W.shape
-        # 输入数据异常判断
-        if n != ny:
-            raise ValueError('X and Y must have the same number of samples')
-        elif p == 1:
-            raise ValueError('X must have at least 2 dimensions')
-        elif py != 1:
-            raise ValueError('Y must have only 1 dimension')
-        # 将y分为H片，c为每个片的样本数
-        c = np.ones((1, self.H)) * (n // self.H) + np.hstack(
-            [np.ones(
-                (1, n % self.H)), np.zeros((1, self.H - n % self.H))])
-        cumc = np.cumsum(c)  # 计算切片累计和
-        # 参照Y的取值从小到大进行排序
-        temp = np.hstack((self.Z, self.Y, W))
-        temp = temp[np.argsort(temp[:, p])]
-        # 提取排序后的z,y,w
-        z, y, w = temp[:, :p], temp[:, p:p + 1], temp[:, p + 1]
+
+        # Determine slice sizes
+        base_count = n // self.H
+        extra = n % self.H
+        counts = np.array([base_count + (1 if i < extra else 0) for i in range(self.H)])
+        cum_counts = np.cumsum(counts)
+
+        # Sort by Y
+        data = np.hstack((Z, Y, W))
+        data = data[np.argsort(data[:, p], axis=0)]
+        z, y, w = data[:, :p], data[:, p:p+1], data[:, p+1:p+2]
+
+        # Compute slice means
         muh = np.zeros((self.H, p))
-        wh = np.zeros((self.H, 1))  # 每个切片的权重
-        k = 0  # 初始化切片编号
+        wh  = np.zeros((self.H, 1))
+        slice_idx = 0
         for i in range(n):
-            if i >= cumc[k]:  # 如果超过了切片的边界，则换下一个切片
-                k += 1
-            muh[k, :] = muh[k, :] + z[i, :]  # 计算切片内自变量之和
-            wh[k] = wh[k] + w[i]  # 计算每个切片包含Yi的概率
-        # 计算每个切片的样本均值,将其作为切片内自变量的取值
-        muh = muh / (np.tile(wh, (1, p)) * n)
-        # 加权主成分分析
-        self.M = np.zeros((p, p))  # 初始化切片 加权协方差矩阵
-        for i in range(self.H):
-            self.M = self.M + wh[i] * muh[i, :].reshape(-1, 1) * muh[i, :]
-        if self.estdim == 0: # 一般情况
-            self.D, self.V = eigs(A=self.M, k=self.K, which='LM')
+            if i >= cum_counts[slice_idx]:
+                slice_idx += 1
+            muh[slice_idx] += z[i]
+            wh[slice_idx]  += w[i]
+        muh = muh / (wh * n)
+
+        # Build SIR matrix M
+        M = np.zeros((p, p))
+        for h in range(self.H):
+            M += wh[h] * np.outer(muh[h], muh[h])
+        self.M = M
+
+        # Eigen decomposition and dimension selection
+        if self.estdim:
+            # Full-spectrum decomposition
+            eigvals, eigvecs = eigh(M)
+            # Sort descending
+            idx = np.argsort(eigvals)[::-1]
+            eigvals = eigvals[idx]
+            eigvecs = eigvecs[:, idx]
+            # Cumulative explained variance
+            cumvar = np.cumsum(eigvals) / np.sum(eigvals)
+            K_auto = int(np.searchsorted(cumvar, self.threshold) + 1)
+            self.K = K_auto
+            self.D = eigvals[:self.K]
+            self.V = eigvecs[:, :self.K]
         else:
-            """ # 稀疏矩阵情况，待修正
-            [V D] = np.linalg,eig(full(M))
-            lambda = np.sort(abs(diag(D)),'descend')
-            L = np.log(lambda+1) - lambda
-            G = np.zeros((p,1))
-            if Cn == 1
-                Cn = n^(1/2)
-            elif Cn == 2
-            Cn = n^(1/3)
-            elif Cn == 3:
-                Cn = 0.5 * n^0.25
-            for k in range(p):
-                G(k) = n / 2 * sum(L(1:k)) / sum(L) - Cn * k * (k+1) / p
-            maxG, K = np. max(G)
-            V, D = eigs(M,K,'lm')
-            """
-            pass
+            if self.K is None:
+                raise ValueError("K must be specified when estdim=False.")
+            # Compute top-K eigenpairs
+            D, V = eigs(A=M, k=self.K, which='LM')
+            # eigs can return complex values; take real part
+            self.D = np.real(D)
+            self.V = np.real(V)
+
         return self.V, self.K, self.M, self.D
+
     def transform(self):
-        hatbeta = np.matmul(fractional_matrix_power(self.sigma_x, -0.5),self.V)
+        """
+        Project original data onto the SIR directions.
+
+        Returns
+        -------
+        hatbeta : array, shape (n_features, K)
+            Projection directions in original X-space.
+        """
+        # Map back through the standardization
+        hatbeta = fractional_matrix_power(self.sigma_x, -0.5) @ self.V
         return hatbeta
+
 
 
 def find_neighborhoods(X_test, X_train, Y_train, M):
@@ -157,21 +295,40 @@ def find_neighborhoods(X_test, X_train, Y_train, M):
         })
     return neighborhoods
 
+# def compute_metrics(predictions, sigmas, Y_test):
+#     """Compute RMSE and NLPD metrics"""
+#     # 计算RMSE
+#     rmse = torch.sqrt(torch.mean((predictions - Y_test)**2))
+    
+#     # 计算NLPD
+#     nlpd = 0.5 * torch.log(2 * math.pi * sigmas**2) + \
+#            0.5 * ((Y_test - predictions)**2) / (sigmas**2)
+    
+#     # 计算四分位数
+#     q75 = torch.quantile(nlpd, 0.75)
+#     q25 = torch.quantile(nlpd, 0.25)
+#     q50 = torch.quantile(nlpd, 0.50)
+    
+#     return rmse, q25, q50, q75
+
 def compute_metrics(predictions, sigmas, Y_test):
-    """Compute RMSE and NLPD metrics"""
-    # 计算RMSE
+    """Compute RMSE and mean CRPS for Gaussian predictive distributions."""
+    # 计算 RMSE
     rmse = torch.sqrt(torch.mean((predictions - Y_test)**2))
     
-    # 计算NLPD
-    nlpd = 0.5 * torch.log(2 * math.pi * sigmas**2) + \
-           0.5 * ((Y_test - predictions)**2) / (sigmas**2)
+    # 计算 CRPS
+    # z = (y - μ) / σ
+    z = (Y_test - predictions) / sigmas
+    # 标准正态 CDF 和 PDF
+    cdf = 0.5 * (1 + torch.erf(z / math.sqrt(2)))
+    pdf = torch.exp(-0.5 * z**2) / math.sqrt(2 * math.pi)
+    # CRPS 闭式公式
+    crps = sigmas * ( z * (2 * cdf - 1) + 2 * pdf - 1 / math.sqrt(math.pi) )
     
-    # 计算四分位数
-    q75 = torch.quantile(nlpd, 0.75)
-    q25 = torch.quantile(nlpd, 0.25)
-    q50 = torch.quantile(nlpd, 0.50)
+    # 平均 CRPS
+    mean_crps = torch.mean(crps)
     
-    return rmse, q25, q50, q75
+    return rmse, mean_crps
 
 def evaluate_jumpgp(X_test, Y_test, neighborhoods, device):
     """Evaluate JumpGP model on test data"""
@@ -208,9 +365,11 @@ def evaluate_jumpgp(X_test, Y_test, neighborhoods, device):
     sigmas = torch.tensor([s.detach().item() for s in jump_gp_res_sig])
     
     # 计算评估指标
-    rmse, q25, q50, q75 = compute_metrics(predictions, sigmas, Y_test)
+    # rmse, q25, q50, q75 = compute_metrics(predictions, sigmas, Y_test)
+    rmse, mean_crps = compute_metrics(predictions, sigmas, Y_test)
     
-    return [rmse, q25, q50, q75, run_time]
+    # return [rmse, q25, q50, q75, run_time]
+    return [rmse, mean_crps, run_time]
 
 def main():
     # 解析命令行参数
@@ -237,11 +396,14 @@ def main():
     result = evaluate_jumpgp(X_test, Y_test, neighborhoods, device)
     
     # 打印结果
+    # print(f"RMSE: {result[0]:.4f}")
+    # print(f"NLPD Q25: {result[1]:.4f}")
+    # print(f"NLPD Q50: {result[2]:.4f}")
+    # print(f"NLPD Q75: {result[3]:.4f}")
+    # print(f"Runtime: {result[4]:.2f} seconds")
     print(f"RMSE: {result[0]:.4f}")
-    print(f"NLPD Q25: {result[1]:.4f}")
-    print(f"NLPD Q50: {result[2]:.4f}")
-    print(f"NLPD Q75: {result[3]:.4f}")
-    print(f"Runtime: {result[4]:.2f} seconds")
+    print(f"CRPS: {result[1]:.4f}")
+    print(f"Runtime: {result[2]:.2f} seconds")
     
     return result
 

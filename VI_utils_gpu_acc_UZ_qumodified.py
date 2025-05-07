@@ -318,7 +318,8 @@ def compute_ELBO(regions, V_params, u_params, hyperparams, ell=3):
     m1   = C.shape[1]
     d2   = (C.unsqueeze(2) - C.unsqueeze(1)).pow(2).sum(-1)     # [T,m1,m1]
     I    = torch.eye(m1, device=device).unsqueeze(0)           # [1,m1,m1]
-    Kuu  = torch.exp(-0.5 * d2) + sigma_noise.view(-1,1,1) * I # [T,m1,m1]
+    # Kuu  = torch.exp(-0.5 * d2) + sigma_noise.view(-1,1,1) * I # [T,m1,m1]
+    Kuu  = torch.exp(-0.5 * d2)                                  # [T,m1,m1]
     Luu  = torch.linalg.cholesky(Kuu)                          # [T,m1,m1]
     Kuu_inv = torch.cholesky_inverse(Luu)                      # [T,m1,m1]
 

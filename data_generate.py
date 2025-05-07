@@ -62,6 +62,8 @@ def generate_Y_from_image(z, caseno, noise_std=0.1):
             # Y_out[i] = 0 + noise_std * torch.randn(1, device=z.device)
     return Y_out
 
+
+
 def generate_Y(z, noise_std=0.1, caseno=None):
     """
     如果 caseno 为 4、5 或 6，则使用图像边界；否则，使用简单规则（如 z[0]+z[1]>0）。
@@ -77,6 +79,159 @@ def generate_Y(z, noise_std=0.1, caseno=None):
                 Y[i] = -5.0 + noise_std * torch.randn(1, device=z.device)
                 # Y[i] = 0 + noise_std * torch.randn(1, device=z.device)
         return Y
+    
+def generate_Y_from_image_rff(
+    z: torch.Tensor,
+    caseno: int,
+    noise_std: float = 0.1,
+    kernel_var: float = 1.0,
+    lengthscale: float = 1.0,
+    num_features: int = 500
+) -> torch.Tensor:
+    """
+    Generate target values Y for given 2D latent points z using
+    a Gaussian Process approximated by Random Fourier Features (RFF),
+    with a piecewise-constant mean determined by an image boundary.
+
+    Args:
+        z (torch.Tensor): 2D latent variables, shape (N, 2).
+        caseno (int): Which boundary image to use: 4 -> 'bound3.png',
+                      5 -> 'bound1.png', 6 -> 'bound4.png'.
+        noise_std (float): Standard deviation of additive observation noise.
+        kernel_var (float): Variance (σ_k^2) of the RBF kernel.
+        lengthscale (float): Lengthscale (ℓ) of the RBF kernel.
+        num_features (int): Number of random Fourier features (D).
+
+    Returns:
+        torch.Tensor: Generated Y values, shape (N,).
+    """
+    device = z.device
+    N, d = z.shape
+
+    # 1. Load and binarize boundary image
+    image_map = {4: 'bound3.png', 5: 'bound1.png', 6: 'bound4.png'}
+    img = io.imread(image_map[caseno])
+    gray = color.rgb2gray(img)
+    binary = gray > 0.5
+    G = 100
+    binary = transform.resize(binary, (G, G), anti_aliasing=False) > 0.5
+    binary_t = torch.from_numpy(binary.astype(np.uint8)).to(device)
+
+    # 2. Build piecewise constant mean m(z): +5 inside, -5 outside
+    # gx = torch.linspace(-3.0, 3.0, G, device=device)
+    # gy = torch.linspace(-3.0, 3.0, G, device=device)
+    gx = torch.linspace(-2.0, 2.0, G, device=device)
+    gy = torch.linspace(-2.0, 2.0, G, device=device)
+    ix = torch.argmin((z[:,0].unsqueeze(1) - gx).abs(), dim=1)
+    iy = torch.argmin((z[:,1].unsqueeze(1) - gy).abs(), dim=1)
+    inside = binary_t[iy, ix].bool()
+    m = torch.where(inside, torch.tensor(5.0, device=device),
+                          torch.tensor(-5.0, device=device))  # (N,)
+
+    # 3. Random Fourier Feature mapping for RBF kernel
+    Omega = torch.randn(num_features, d, device=device) / lengthscale  # (D,2)
+    phases = torch.rand(num_features, device=device) * 2 * torch.pi      # (D,)
+    projection = z @ Omega.t() + phases                                 # (N,D)
+    scale = torch.tensor(2 * kernel_var / num_features, device=device)
+    Phi = torch.sqrt(scale) * torch.cos(projection)                     # (N,D)
+
+    # 4. Sample GP in feature space
+    w = torch.randn(num_features, device=device)  # (D,)
+    f_rff = Phi @ w                                # (N,)
+
+    # 5. Add mean and observation noise
+    Y = m + f_rff + noise_std * torch.randn(N, device=device)
+    return Y
+
+import torch
+import numpy as np
+from typing import List, Dict, Union
+
+Region = Dict[str, Union[str, float, List[float]]]
+# A Region is a dict with keys:
+#   - "type":   "ball" or "hypercube"
+#   - if "ball":       "center": List[float], "radius": float,    "mean": float
+#   - if "hypercube":  "mins":   List[float], "maxs": List[float], "mean": float
+
+def compute_piecewise_mean(
+    z: torch.Tensor,
+    regions: List[Region],
+    default_mean: float = 0.0
+) -> torch.Tensor:
+    """
+    For each row z[i] in (N, D), assign m[i] = regions[j]["mean"] for
+    the first region j that contains z[i], else default_mean.
+    """
+    device = z.device
+    N, D = z.shape
+    m = torch.full((N,), default_mean, device=device)
+    for reg in regions:
+        mean_val = torch.tensor(reg["mean"], device=device, dtype=z.dtype)
+        if reg["type"] == "ball":
+            center = torch.tensor(reg["center"], device=device, dtype=z.dtype)
+            radius = float(reg["radius"])
+            # compute squared distance
+            d2 = torch.sum((z - center.unsqueeze(0))**2, dim=1)
+            mask = (d2 <= radius**2)
+        elif reg["type"] == "hypercube":
+            mins = torch.tensor(reg["mins"], device=device, dtype=z.dtype)
+            maxs = torch.tensor(reg["maxs"], device=device, dtype=z.dtype)
+            mask = ((z >= mins.unsqueeze(0)) & (z <= maxs.unsqueeze(0))).all(dim=1)
+        else:
+            raise ValueError(f"Unknown region type {reg['type']!r}")
+        # only assign where not already assigned
+        unassigned = (m == default_mean)
+        assign_mask = mask & unassigned
+        m[assign_mask] = mean_val
+    return m
+
+
+def generate_Y_from_regions_rff(
+    z: torch.Tensor,
+    regions: List[Region],
+    default_mean: float = -5.0,
+    noise_std: float = 0.1,
+    kernel_var: float = 1.0,
+    lengthscale: float = 1.0,
+    num_features: int = 500
+) -> torch.Tensor:
+    """
+    Generate Y for latent points z (N×D) by
+      1) computing a piecewise-constant mean via `regions`,
+      2) drawing a GP sample around that mean using RFF.
+
+    Args:
+      z            : (N, D) latent inputs.
+      regions      : list of region dicts (ball or hypercube) with a "mean".
+      default_mean : value for points in no region.
+      noise_std    : observational noise σ_n.
+      kernel_var   : GP kernel variance σ_k^2.
+      lengthscale  : GP kernel lengthscale ℓ.
+      num_features : number of RFF features D.
+
+    Returns:
+      Y : (N,) samples.
+    """
+    device = z.device
+    N, D = z.shape
+
+    # 1) piecewise constant mean
+    m = compute_piecewise_mean(z, regions, default_mean)  # (N,)
+
+    # 2) random Fourier features for RBF kernel
+    Omega = torch.randn(num_features, D, device=device) / lengthscale  # (D_rff, D)
+    phases = torch.rand(num_features, device=device) * 2 * torch.pi     # (D_rff,)
+    proj = z @ Omega.t() + phases                                       # (N, D_rff)
+    scale = torch.tensor(2 * kernel_var / num_features, device=device)
+    Phi = torch.sqrt(scale) * torch.cos(proj)                           # (N, D_rff)
+
+    # 3) sample the GP in feature space
+    w = torch.randn(num_features, device=device)  # (D_rff,)
+    f = Phi @ w                                   # (N,)
+
+    # 4) add mean + noise
+    Y = m + f + noise_std * torch.randn(N, device=device)
+    return Y
 
 def normalize_A(A):
     """
@@ -105,6 +260,102 @@ def normalize_A(A):
         
     return A_normalized
 
+# def generate_data(args):
+#     """
+#     Generate synthetic data based on input arguments.
+#     """
+#     device = torch.device(args.device)
+#     torch.set_default_dtype(torch.float32)
+
+#     # Generate input X_train and X_test
+#     X_train = torch.randn(args.N, args.D, device=device)
+#     X_test = torch.randn(args.T, args.D, device=device)
+#     X_all = torch.cat([X_train, X_test], dim=0)
+#     N_all = X_all.shape[0]
+
+#     # Sample GP hyperparameters for A(x)
+#     # gamma_dist = torch.distributions.Gamma(2.0, 1.0)
+#     gamma_dist = torch.distributions.Gamma(4.0, 2.0)
+#     sigma_a_A = gamma_dist.sample().to(device)
+#     sigma_q_A = gamma_dist.sample((1,)).to(device)
+
+#     # Compute GP covariance matrix K_A
+#     diff = X_all.unsqueeze(1) - X_all.unsqueeze(0)
+#     sqdist = torch.sum(diff**2, dim=2)
+#     K_A = sigma_a_A**2 * torch.exp(-0.5 * sqdist / (sigma_q_A**2))
+#     K_A = K_A + 1e-6 * torch.eye(N_all, device=device, dtype=K_A.dtype)
+
+#     # Generate A for each (q, d)
+#     A_all = torch.empty(N_all, args.Q, args.D, device=device)
+#     mean_zero = torch.zeros(N_all, device=device)
+#     for q in range(args.Q):
+#         for d in range(args.D):
+#             mvn = torch.distributions.MultivariateNormal(mean_zero, covariance_matrix=K_A)
+#             A_all[:, q, d] = mvn.sample()
+
+#     # 对A进行正则化
+#     A_all = normalize_A(A_all)
+
+#     # Split A into train and test
+#     A_train = A_all[:args.N]
+#     A_test = A_all[args.N:]
+
+#     # Compute latent variables z(x)
+#     z_train = torch.bmm(A_train, X_train.unsqueeze(-1)).squeeze(-1)
+#     z_test = torch.bmm(A_test, X_test.unsqueeze(-1)).squeeze(-1)
+
+#     # Generate target variables
+#     # Y_train = generate_Y(z_train, noise_std=0.1, caseno=args.caseno)
+#     # Y_test = generate_Y(z_test, noise_std=0.1, caseno=args.caseno)
+#     # Y_train = generate_Y(z_train, noise_std=1, caseno=args.caseno)
+#     # Y_test = generate_Y(z_test, noise_std=1, caseno=args.caseno)
+#     Y_train = generate_Y_from_image_rff(z_train, noise_std=1, caseno=args.caseno)
+#     Y_test = generate_Y_from_image_rff(z_test, noise_std=1, caseno=args.caseno)
+
+#     return {
+#         "X_train": X_train, "Y_train": Y_train,
+#         "X_test": X_test, "Y_test": Y_test,
+#         "hyperparams": {"sigma_a_A": sigma_a_A.item(), "sigma_q_A": sigma_q_A.item()}
+#     }
+regions_5d = [
+    # 1) 原点小球：半径 1，mean = -5
+    {"type": "ball", "center": [0.0]*5, "radius": 1.0, "mean": -5.0},
+    # 2) 原点球壳：半径 1 到 2 之间，mean = +5
+    {"type": "ball", "center": [0.0]*5, "radius": 2.0, "mean": +5.0},
+    # 3) 坐标轴中间的小超立方体：[-0.5,0.5]^5，mean = 0
+    {"type": "hypercube", "mins": [-0.5]*5, "maxs": [0.5]*5, "mean": 0.0},
+    # 4) 右上角大超立方体：所有坐标 ∈ [1,2]，mean = +3
+    {"type": "hypercube", "mins": [1.0]*5, "maxs": [2.0]*5, "mean": +3.0},
+    # 5) 另一个偏移球体：中心在 (2,-2,0,0,1)，半径 0.8，mean = -3
+    {"type": "ball", "center": [2.0,-2.0,0.0,0.0,1.0], "radius": 0.8, "mean": -3.0},
+]
+
+regions_4d = [
+    # 1) 全局大球：中心原点，半径 2，mean = +2
+    {"type": "ball",       "center": [0.0]*4,  "radius": 2.0, "mean": +5.0},
+    # 2) 小球（嵌套）：中心原点，半径 1，mean = -2
+    {"type": "ball",       "center": [0.0]*4,  "radius": 1.0, "mean": -5.0},
+    # 3) 边角超立方：坐标 ∈ [-2,-1]^4，mean = +4
+    {"type": "hypercube",  "mins": [-2.0]*4,   "maxs": [-1.0]*4, "mean": +4.0},
+    # 4) 中间超立方：坐标 ∈ [-0.5,0.5]×[1,1.5]×…，mean = 0
+    {"type": "hypercube",  "mins": [-0.5,1.0,-0.5,-0.5],
+                           "maxs": [ 0.5,1.5, 0.5, 0.5], "mean": 0.0},
+]
+
+regions_3d = [
+    # 1) 大球：center=(0,0,0), radius=3, mean=+1
+    {"type": "ball",       "center": [0,0,0],   "radius": 3.0, "mean": +5.0},
+    # 2) 中球：center=(0,0,0), radius=2, mean=-1
+    {"type": "ball",       "center": [0,0,0],   "radius": 2.0, "mean": -5.0},
+    # 3) 小球：center=(0,0,0), radius=1, mean=+5
+    {"type": "ball",       "center": [0,0,0],   "radius": 1.0, "mean": +0.0},
+    # 4) 某角落超立方：x∈[1,2],y∈[-2,-1],z∈[0,1]，mean=0
+    {"type": "hypercube",  "mins": [1.0,-2.0,0.0],
+                           "maxs": [2.0,-1.0,1.0], "mean": 4.0},
+    # 5) 另一区域：x^2+y^2<1 且 z>1 （可通过两个条件组合实现），mean=+3
+    #    —— 如果你需要更复杂的交集/并集，可自行在代码中添加逻辑。
+]
+
 def generate_data(args):
     """
     Generate synthetic data based on input arguments.
@@ -112,54 +363,85 @@ def generate_data(args):
     device = torch.device(args.device)
     torch.set_default_dtype(torch.float32)
 
-    # Generate input X_train and X_test
+    # 1) Generate X_train, X_test, and stack
     X_train = torch.randn(args.N, args.D, device=device)
-    X_test = torch.randn(args.T, args.D, device=device)
-    X_all = torch.cat([X_train, X_test], dim=0)
-    N_all = X_all.shape[0]
+    X_test  = torch.randn(args.T, args.D, device=device)
+    X_all   = torch.cat([X_train, X_test], dim=0)
+    N_all   = X_all.shape[0]
 
-    # Sample GP hyperparameters for A(x)
-    # gamma_dist = torch.distributions.Gamma(2.0, 1.0)
+    # 2) Sample GP hyperparameters and build K_A (unchanged) …
     gamma_dist = torch.distributions.Gamma(4.0, 2.0)
-    sigma_a_A = gamma_dist.sample().to(device)
-    sigma_q_A = gamma_dist.sample((1,)).to(device)
+    sigma_a_A  = gamma_dist.sample().to(device)
+    sigma_q_A  = gamma_dist.sample((1,)).to(device)
 
-    # Compute GP covariance matrix K_A
-    diff = X_all.unsqueeze(1) - X_all.unsqueeze(0)
+    diff   = X_all.unsqueeze(1) - X_all.unsqueeze(0)
     sqdist = torch.sum(diff**2, dim=2)
-    K_A = sigma_a_A**2 * torch.exp(-0.5 * sqdist / (sigma_q_A**2))
-    K_A = K_A + 1e-6 * torch.eye(N_all, device=device, dtype=K_A.dtype)
+    K_A    = sigma_a_A**2 * torch.exp(-0.5 * sqdist / (sigma_q_A**2))
+    K_A   += 1e-6 * torch.eye(N_all, device=device)
 
-    # Generate A for each (q, d)
+    # 3) Sample A_all and normalize (unchanged) …
     A_all = torch.empty(N_all, args.Q, args.D, device=device)
-    mean_zero = torch.zeros(N_all, device=device)
+    mean0 = torch.zeros(N_all, device=device)
     for q in range(args.Q):
         for d in range(args.D):
-            mvn = torch.distributions.MultivariateNormal(mean_zero, covariance_matrix=K_A)
+            mvn = torch.distributions.MultivariateNormal(mean0, covariance_matrix=K_A)
             A_all[:, q, d] = mvn.sample()
-
-    # 对A进行正则化
     A_all = normalize_A(A_all)
 
-    # Split A into train and test
+    # 4) Split A into train/test
     A_train = A_all[:args.N]
-    A_test = A_all[args.N:]
+    A_test  = A_all[args.N:]
 
-    # Compute latent variables z(x)
+    # 5) Compute latent z for train and test
     z_train = torch.bmm(A_train, X_train.unsqueeze(-1)).squeeze(-1)
-    z_test = torch.bmm(A_test, X_test.unsqueeze(-1)).squeeze(-1)
+    z_test  = torch.bmm(A_test,  X_test.unsqueeze(-1)).squeeze(-1)
 
-    # Generate target variables
-    # Y_train = generate_Y(z_train, noise_std=0.1, caseno=args.caseno)
-    # Y_test = generate_Y(z_test, noise_std=0.1, caseno=args.caseno)
-    Y_train = generate_Y(z_train, noise_std=1, caseno=args.caseno)
-    Y_test = generate_Y(z_test, noise_std=1, caseno=args.caseno)
+    # ────────────────────────────────────────────────────────────────────
+    # 6) Jointly sample Y_all in one go, then split
+    z_all = torch.cat([z_train, z_test], dim=0) 
+    if z_all.shape[1] == 2:
+        Y_all = generate_Y_from_image_rff(
+            z_all,
+            caseno    = args.caseno,
+            noise_std = 1.0,
+            kernel_var = 1.0,
+            lengthscale = 1.0,
+            num_features = 500
+        )
+    else: 
+        if z_all.shape[1] == 5:
+            regions = regions_5d
+        elif z_all.shape[1] == 4:
+            regions = regions_4d
+        elif z_all.shape[1] == 3:
+            regions = regions_3d
+        else:
+            raise ValueError("Unsupported dimension")
+
+        Y_all = generate_Y_from_regions_rff(
+            z_all,
+            regions       = regions,
+            default_mean  = -5.0,
+            noise_std     = 0.1,
+            kernel_var    = 1.0,
+            lengthscale   = 1.0,
+            num_features  = 500
+        )
+
+    
+    Y_train = Y_all[:args.N]
+    Y_test  = Y_all[args.N:]
+    # ────────────────────────────────────────────────────────────────────
 
     return {
         "X_train": X_train, "Y_train": Y_train,
-        "X_test": X_test, "Y_test": Y_test,
-        "hyperparams": {"sigma_a_A": sigma_a_A.item(), "sigma_q_A": sigma_q_A.item()}
+        "X_test":  X_test,  "Y_test":  Y_test,
+        "hyperparams": {
+            "sigma_a_A": sigma_a_A.item(),
+            "sigma_q_A": sigma_q_A.item()
+        }
     }
+
 
 import torch
 import math
@@ -193,15 +475,50 @@ def generate_data1(args):
 
     # 2. 随机傅里叶特征映射到高维 Z_all
     #    M: 高维特征数，sigma: 控制核宽度
-    Z_all = random_fourier_features(X_all, M=2, sigma=1)  # (N+T, M)
+    z_all = random_fourier_features(X_all, M=args.Q, sigma=1)  # (N+T, M)
+
+    # z_all = torch.cat([z_train, z_test], dim=0) 
+    if z_all.shape[1] == 2:
+        Y_all = generate_Y_from_image_rff(
+            z_all,
+            caseno    = args.caseno,
+            noise_std = 1.0,
+            kernel_var = 1.0,
+            lengthscale = 1.0,
+            num_features = 500
+        )
+    else: 
+        if z_all.shape[1] == 5:
+            regions = regions_5d
+        elif z_all.shape[1] == 4:
+            regions = regions_4d
+        elif z_all.shape[1] == 3:
+            regions = regions_3d
+        else:
+            raise ValueError("Unsupported dimension")
+
+        Y_all = generate_Y_from_regions_rff(
+            z_all,
+            regions       = regions,
+            default_mean  = -5.0,
+            noise_std     = 0.1,
+            kernel_var    = 1.0,
+            lengthscale   = 1.0,
+            num_features  = 500
+        )
+
+    
+    Y_train = Y_all[:args.N]
+    Y_test  = Y_all[args.N:]
+    # print(Y_train.shape)
 
     # 3. 切分 Z 为训练/测试
-    Z_train = Z_all[:args.N]     # (N, M)
-    Z_test  = Z_all[args.N:]     # (T, M)
+    Z_train = z_all[:args.N]     # (N, M)
+    Z_test  = z_all[args.N:]     # (T, M)
 
     # 4. 根据高维特征 Z 生成目标 Y
-    Y_train = generate_Y(Z_train, noise_std=1.0, caseno=args.caseno)
-    Y_test  = generate_Y(Z_test,  noise_std=1.0, caseno=args.caseno)
+    # Y_train = generate_Y(Z_train, noise_std=1.0, caseno=args.caseno)
+    # Y_test  = generate_Y(Z_test,  noise_std=1.0, caseno=args.caseno)
 
     return {
         "X_train": X_train, "Y_train": Y_train,

@@ -70,10 +70,10 @@ class ToyDeepGPHiddenLayer(DeepGPLayer):
         return super().__call__(x, are_samples=bool(len(other_inputs)))
 
 class DeepGP(DeepGP):
-    def __init__(self, train_x_shape):
+    def __init__(self, train_x_shape, output_dims):
         hidden_layer = ToyDeepGPHiddenLayer(
             input_dims=train_x_shape[-1],
-            output_dims=2,  # num_hidden_dims
+            output_dims=output_dims,  # num_hidden_dims
             mean_type='linear',
         )
 
@@ -107,6 +107,80 @@ class DeepGP(DeepGP):
 
         return torch.cat(mus, dim=-1), torch.cat(variances, dim=-1), torch.cat(lls, dim=-1)
 
+# def train_model(model, train_loader, test_loader, optimizer, mll, args):
+#     best_loss = float('inf')
+#     patience_counter = 0
+#     final_metrics = None
+#     num_samples = 3
+
+#     start_time = time.time()
+#     epochs_iter = tqdm.tqdm(range(args.num_epochs), desc="Epoch")
+#     for epoch in epochs_iter:
+#         # 训练模式
+#         model.train()
+#         epoch_loss = 0.0
+#         num_batches = 0
+        
+#         # 对每个 minibatch 进行训练
+#         minibatch_iter = tqdm.tqdm(train_loader, desc="Minibatch", leave=False)
+#         for x_batch, y_batch in minibatch_iter:
+#             with gpytorch.settings.num_likelihood_samples(num_samples):
+#                 optimizer.zero_grad()
+#                 output = model(x_batch)
+#                 loss = -mll(output, y_batch)
+#                 loss.backward()
+#                 optimizer.step()
+#                 epoch_loss += loss.item()
+#                 num_batches += 1
+#                 minibatch_iter.set_postfix(loss=loss.item())
+        
+#         # 计算平均损失
+#         avg_epoch_loss = epoch_loss / num_batches
+        
+#         # 早停检查
+#         if avg_epoch_loss < best_loss:
+#             best_loss = avg_epoch_loss
+#             patience_counter = 0
+#         else:
+#             patience_counter += 1
+        
+#         # 模型评估
+#         model.eval()
+#         with torch.no_grad():
+#             predictive_means, predictive_variances, test_lls = model.predict(test_loader)
+        
+#         # 计算评估指标
+#         rmse = torch.mean((predictive_means.mean(0) - test_loader.dataset.tensors[1])**2).sqrt().item()
+#         nlpd_values = -test_lls
+#         nlpd_25 = torch.quantile(nlpd_values, 0.25).item()
+#         nlpd_50 = torch.quantile(nlpd_values, 0.50).item()
+#         nlpd_75 = torch.quantile(nlpd_values, 0.75).item()
+        
+#         # 保存最后一轮的指标
+#         final_metrics = {
+#             'rmse': rmse,
+#             'nlpd_25': nlpd_25,
+#             'nlpd_50': nlpd_50,
+#             'nlpd_75': nlpd_75,
+#             'run_time': time.time() - start_time
+#         }
+        
+#         # 更新进度条信息
+#         epochs_iter.set_postfix(
+#             loss=f"{avg_epoch_loss:.4f}",
+#             rmse=f"{rmse:.4f}",
+#             nlpd_50=f"{nlpd_50:.4f}"
+#         )
+        
+#         # 检查是否需要早停
+#         if patience_counter >= args.patience:
+#             print(f"\nEarly stopping triggered after {epoch + 1} epochs")
+#             break
+    
+#     return final_metrics
+
+import time, tqdm, math, torch
+
 def train_model(model, train_loader, test_loader, optimizer, mll, args):
     best_loss = float('inf')
     patience_counter = 0
@@ -116,14 +190,12 @@ def train_model(model, train_loader, test_loader, optimizer, mll, args):
     start_time = time.time()
     epochs_iter = tqdm.tqdm(range(args.num_epochs), desc="Epoch")
     for epoch in epochs_iter:
-        # 训练模式
+        # ——— 训练环节 ———
         model.train()
         epoch_loss = 0.0
         num_batches = 0
         
-        # 对每个 minibatch 进行训练
-        minibatch_iter = tqdm.tqdm(train_loader, desc="Minibatch", leave=False)
-        for x_batch, y_batch in minibatch_iter:
+        for x_batch, y_batch in tqdm.tqdm(train_loader, desc="Minibatch", leave=False):
             with gpytorch.settings.num_likelihood_samples(num_samples):
                 optimizer.zero_grad()
                 output = model(x_batch)
@@ -132,52 +204,55 @@ def train_model(model, train_loader, test_loader, optimizer, mll, args):
                 optimizer.step()
                 epoch_loss += loss.item()
                 num_batches += 1
-                minibatch_iter.set_postfix(loss=loss.item())
         
-        # 计算平均损失
         avg_epoch_loss = epoch_loss / num_batches
-        
-        # 早停检查
+        # 早停逻辑
         if avg_epoch_loss < best_loss:
             best_loss = avg_epoch_loss
             patience_counter = 0
         else:
             patience_counter += 1
         
-        # 模型评估
+        # ——— 评估环节 ———
         model.eval()
         with torch.no_grad():
-            predictive_means, predictive_variances, test_lls = model.predict(test_loader)
+            predictive_means, predictive_variances, _ = model.predict(test_loader)
         
-        # 计算评估指标
-        rmse = torch.mean((predictive_means.mean(0) - test_loader.dataset.tensors[1])**2).sqrt().item()
-        nlpd_values = -test_lls
-        nlpd_25 = torch.quantile(nlpd_values, 0.25).item()
-        nlpd_50 = torch.quantile(nlpd_values, 0.50).item()
-        nlpd_75 = torch.quantile(nlpd_values, 0.75).item()
+        # 提取参数
+        mu = predictive_means.mean(0)                # [N_test]
+        sigma = predictive_variances.sqrt()          # [N_test]
+        y_true = test_loader.dataset.tensors[1]      # [N_test]
         
-        # 保存最后一轮的指标
+        # RMSE
+        rmse = torch.sqrt(torch.mean((mu - y_true)**2)).item()
+        
+        # CRPS
+        z = (y_true - mu) / sigma
+        cdf = 0.5 * (1 + torch.erf(z / math.sqrt(2)))
+        pdf = torch.exp(-0.5 * z**2) / math.sqrt(2*math.pi)
+        crps_vals = sigma * ( z * (2*cdf - 1) + 2*pdf - 1/math.sqrt(math.pi) )
+        mean_crps = crps_vals.mean().item()
+        
+        # 保存
         final_metrics = {
-            'rmse': rmse,
-            'nlpd_25': nlpd_25,
-            'nlpd_50': nlpd_50,
-            'nlpd_75': nlpd_75,
+            'rmse':   rmse,
+            'crps':   mean_crps,
             'run_time': time.time() - start_time
         }
         
-        # 更新进度条信息
+        # 更新进度条
         epochs_iter.set_postfix(
             loss=f"{avg_epoch_loss:.4f}",
             rmse=f"{rmse:.4f}",
-            nlpd_50=f"{nlpd_50:.4f}"
+            crps=f"{mean_crps:.4f}"
         )
         
-        # 检查是否需要早停
         if patience_counter >= args.patience:
             print(f"\nEarly stopping triggered after {epoch + 1} epochs")
             break
     
     return final_metrics
+
 
 def main():
     # 参数解析
@@ -186,6 +261,7 @@ def main():
     parser.add_argument('--num_epochs', type=int, default=200, help='Maximum number of epochs')
     parser.add_argument('--patience', type=int, default=5, help='Early stopping patience')
     parser.add_argument('--batch_size', type=int, default=1024, help='Batch size')
+    parser.add_argument('--hidden_dim', type=int, default=2, help='Hidden dimension')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
     args = parser.parse_args()
 
@@ -209,7 +285,7 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size)
 
     # 初始化模型
-    model = DeepGP(X_train.shape).to(device)
+    model = DeepGP(X_train.shape, args.hidden_dim).to(device)
     
     # 初始化优化器和损失函数
     optimizer = torch.optim.Adam([{'params': model.parameters()}], lr=args.lr)
@@ -221,9 +297,7 @@ def main():
     # 打印最终结果
     print("\nFinal metrics:")
     print(f"RMSE: {final_metrics['rmse']:.4f}")
-    print(f"NLPD (25th percentile): {final_metrics['nlpd_25']:.4f}")
-    print(f"NLPD (50th percentile): {final_metrics['nlpd_50']:.4f}")
-    print(f"NLPD (75th percentile): {final_metrics['nlpd_75']:.4f}")
+    print(f"CRPS: {final_metrics['crps']:.4f}")
 
     # # 保存结果
     # results = {
@@ -237,7 +311,8 @@ def main():
     # with open(results_path, 'wb') as f:
     #     pickle.dump(results, f)
     # print(f"\nResults saved to {results_path}")
-    return [final_metrics['rmse'], final_metrics['nlpd_25'], final_metrics['nlpd_50'], final_metrics['nlpd_75'], final_metrics['run_time']]
+    # return [final_metrics['rmse'], final_metrics['nlpd_25'], final_metrics['nlpd_50'], final_metrics['nlpd_75'], final_metrics['run_time']]
+    return [final_metrics['rmse'], final_metrics['crps'], final_metrics['run_time']]
 
 if __name__ == "__main__":
     main()

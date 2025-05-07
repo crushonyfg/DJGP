@@ -12,7 +12,7 @@ import math
 from utils1 import jumpgp_ld_wrapper
 # from VI_utils_gpu_acc_UZ_mean import *
 # from VI_utils_gpu_acc_UZ import *
-from VI_utils_gpu_acc_UZ_qumodified import *
+from VI_utils_gpu_acc_UZ_qumodified_cor import *
 from JumpGP_test import *
 
 def parse_args():
@@ -87,6 +87,7 @@ def main():
             'mu_u':       torch.randn(m1, device=device, requires_grad=True),
             'Sigma_u':    torch.eye(m1, device=device, requires_grad=True),
             'sigma_noise':torch.tensor(0.5, device=device, requires_grad=True),
+            'sigma_k':torch.tensor(0.5, device=device, requires_grad=True),
             'omega':      torch.randn(Q+1, device=device, requires_grad=True),
         })
 
@@ -105,10 +106,10 @@ def main():
     print("Everything set!")
 
     # 8. Compute ELBO, backprop, train, predict
-    L = compute_ELBO(regions, V_params, u_params, hyperparams)
-    print("ELBO L =", L.item())
-    L.backward()
-    print("Gradients OK")
+    # L = compute_ELBO(regions, V_params, u_params, hyperparams)
+    # print("ELBO L =", L.item())
+    # L.backward()
+    # print("Gradients OK")
 
     V_params, u_params, hyperparams = train_vi(
         regions=regions,
@@ -125,16 +126,21 @@ def main():
         regions, V_params, hyperparams, M=MC_num
     )
     print("Prediction OK")
-    print("mu_pred:", mu_pred.shape)
-    print("var_pred:", var_pred.shape)
+    # print("mu_pred:", mu_pred.shape)
+    # print("var_pred:", var_pred.shape)
 
     # 9. Compute metrics & runtime
     run_time = time.time() - start_time
-    rmse, q25, q50, q75 = compute_metrics(mu_pred, var_pred, Y_test)
-    print("Results [rmse, 25%, 50%, 75%, runtime]:")
-    print([rmse, q25, q50, q75, run_time])
+    # rmse, q25, q50, q75 = compute_metrics(mu_pred, var_pred, Y_test)
+    # print("Results [rmse, 25%, 50%, 75%, runtime]:")
+    # print([rmse, q25, q50, q75, run_time])
 
-    return [rmse, q25, q50, q75, run_time]
+    # return [rmse, q25, q50, q75, run_time]
+    sigmas = torch.sqrt(var_pred)
+    rmse, mean_crps = compute_metrics(mu_pred, sigmas, Y_test)
+    print(f"Results [rmse, mean crps, runtime]:{[rmse, mean_crps]}")
+    # return [rmse, q25, q50, q75, run_time]
+    return [rmse, mean_crps, run_time]
 
 if __name__ == "__main__":
     main()
