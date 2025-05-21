@@ -170,9 +170,9 @@ def compute_ELBO_bnn(regions, u_params, g_phi, hyperparams, prior_phi=True):
 
     # 8) subtract network KL
     if prior_phi:
-        elbo = elbo_jgp - g_phi.kl()
+        elbo = elbo_jgp/T - g_phi.kl()
     else:
-        elbo = elbo_jgp
+        elbo = elbo_jgp/T
 
     return elbo
 
@@ -197,8 +197,8 @@ def train_bnn(regions, u_params, g_phi, hyperparams,
         # clamp for positivity
         with torch.no_grad():
             for u in u_params:
-                u['sigma_n'].clamp_(min=1e-6)
-                u['sigma_k'].clamp_(min=1e-6)
+                u['sigma_n'].clamp_(min=1e-1)
+                u['sigma_k'].clamp_(min=1e-1)
         if step % log_interval == 0 or step == 1:
             print(f"[Train] Step {step}/{num_steps}, ELBO={elbo.item():.3f}")
 

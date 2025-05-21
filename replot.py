@@ -12,7 +12,7 @@ def load_results(filename: str) -> dict:
 def plot_metrics_with_mean(results: dict, output_file: str):
     """
     Plot RMSE and CRPS vs runtime, and on the RMSE subplot draw
-    horizontal lines showing each method’s mean RMSE across runs.
+    horizontal lines showing each method's mean RMSE across runs.
     """
     metrics = ['rmse', 'crps']
     fig, axes = plt.subplots(1, 2, figsize=(15, 7))
@@ -23,7 +23,7 @@ def plot_metrics_with_mean(results: dict, output_file: str):
         'JumpGP':    'blue',
         'JumpGPsir': 'red',
         'DeepGP':    'green',
-        'DJGP':      'cyan',
+        'LMJGP':      'cyan',
         'GPsir':     'purple',
         'GP':        'orange',
         'NNJGP':     'magenta',
@@ -33,7 +33,7 @@ def plot_metrics_with_mean(results: dict, output_file: str):
         'JumpGP':    'o',
         'JumpGPsir': 's',
         'DeepGP':    '^',
-        'DJGP':      '*',
+        'LMJGP':      '*',
         'GPsir':     'D',
         'GP':        'v',
         'NNJGP':     'X',
@@ -120,6 +120,158 @@ def plot_metrics_with_mean(results: dict, output_file: str):
     plt.close()
     print(f"Saved plot with mean lines to {output_file}")
 
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+
+# def plot_metrics_boxplot(results: dict, output_file: str):
+#     """
+#     对每个方法在 RMSE 和 CRPS 上绘制 boxplot，不再画散点和均值直线。
+#     results: {
+#         run_id: {
+#             method_name: (rmse, crps, runtime),
+#             ...
+#         },
+#         ...
+#     }
+#     output_file: 保存的文件路径
+#     """
+#     metrics = ['rmse', 'crps']
+#     fig, axes = plt.subplots(1, 2, figsize=(15, 7))
+#     axes = axes.ravel()
+
+#     # 方法对应的颜色
+#     colors = {
+#         'JumpGP':    'blue',
+#         'JumpGPsirGlobal': 'red',
+#         'DeepGP':    'green',
+#         'LMJGP':      'cyan',
+#         'GPsir':     'purple',
+#         'GP':        'orange',
+#         'NNJGP':     'magenta',
+#         'BNNJGP':    'brown',
+#     }
+
+#     # 收集每个方法在各 runs 上的两个指标
+#     metric_by_method = {base: [] for base in colors.keys()}
+#     for run_res in results.values():
+#         for method, vals in run_res.items():
+#             base = method.split('_')[0]
+#             # 提取 rmse, crps
+#             raw_rmse, raw_crps = vals[0], vals[1]
+#             rmse = (raw_rmse.detach().cpu().item()
+#                     if isinstance(raw_rmse, torch.Tensor)
+#                     else float(raw_rmse))
+#             crps = (raw_crps.detach().cpu().item()
+#                     if isinstance(raw_crps, torch.Tensor)
+#                     else float(raw_crps))
+#             metric_by_method[base].append((rmse, crps))
+
+#     # 对每个指标画 boxplot
+#     for i, metric in enumerate(metrics):
+#         ax = axes[i]
+#         # 准备数据：一个 list of lists
+#         labels = list(metric_by_method.keys())
+#         data = []
+#         for base in labels:
+#             # 对应每个 run 的第 i 个指标
+#             vals = [entry[i] for entry in metric_by_method[base]]
+#             data.append(vals if vals else [np.nan])  # 若某方法无数据，放一个 nan 保持位置
+
+#         # 绘制 boxplot，使用 patch_artist 方便上色
+#         bp = ax.boxplot(data, labels=labels, patch_artist=True, showfliers=False)
+#         for patch, base in zip(bp['boxes'], labels):
+#             patch.set_facecolor(colors.get(base, 'white'))
+#             patch.set_edgecolor('black')
+
+#         ax.set_title(f'{metric.upper()} by Method')
+#         ax.set_ylabel(metric.upper())
+#         ax.grid(True, axis='y')
+#         ax.tick_params(axis='x', rotation=45)
+
+#     plt.tight_layout()
+#     plt.savefig(output_file, bbox_inches='tight', dpi=300)
+#     plt.close()
+#     print(f"Saved boxplot to {output_file}")
+
+def plot_metrics_boxplot(results: dict, output_file: str):
+    """
+    对每个方法在 RMSE 和 CRPS 上绘制 boxplot，方法动态识别，
+    不再假定事先知道有哪些 base。
+    """
+    metrics = ['rmse', 'crps']
+    fig, axes = plt.subplots(1, 2, figsize=(15, 7))
+    axes = axes.ravel()
+
+    # 预定义常见方法的颜色，未知方法使用 'gray'
+    colors = {
+        'JumpGP':    'blue',
+        'JumpGPsirGlobal': 'red',
+        'DeepGP':    'green',
+        'LMJGP':      'cyan',
+        'GPsir':     'purple',
+        'GP':        'orange',
+        'NNJGP':     'magenta',
+        'BNNJGP':    'brown',
+    }
+    default_color = 'gray'
+
+    # 动态收集每个 base 方法在所有 runs 上的 (rmse, crps)
+    metric_by_method = {}
+    for run_res in results.values():
+        for method, vals in run_res.items():
+            base = method.split('_')[0]
+            # 将 DJGP 替换为 LMJGP
+            if base == 'DJGP':
+                base = 'LMJGP'
+            # 提取指标值
+            raw_rmse, raw_crps = vals[0], vals[1]
+            rmse = (raw_rmse.detach().cpu().item()
+                    if isinstance(raw_rmse, torch.Tensor)
+                    else float(raw_rmse))
+            crps = (raw_crps.detach().cpu().item()
+                    if isinstance(raw_crps, torch.Tensor)
+                    else float(raw_crps))
+            metric_by_method.setdefault(base, []).append((rmse, crps))
+
+    # 准备排序后的标签列表，保证图中方法顺序一致
+    labels = sorted(metric_by_method.keys())
+
+    # 对每个指标画 boxplot
+    for i, metric in enumerate(metrics):
+        ax = axes[i]
+        data = [
+            [entry[i] for entry in metric_by_method[base]]
+            for base in labels
+        ]
+
+        # 绘制 boxplot
+        bp = ax.boxplot(
+            data,
+            tick_labels=labels,
+            patch_artist=True,
+            showfliers=False
+        )
+        # 根据方法名上色
+        for patch, base in zip(bp['boxes'], labels):
+            color = colors.get(base, default_color)
+            # patch.set_facecolor(color)
+            patch.set_facecolor('gray')
+            patch.set_edgecolor('black')
+
+        ax.set_title(f'{metric.upper()} by Method')
+        ax.set_ylabel(metric.upper())
+        ax.grid(True, axis='y')
+        ax.tick_params(axis='x', rotation=45)
+
+    plt.tight_layout()
+    plt.savefig(output_file, bbox_inches='tight', dpi=300)
+    plt.close()
+    print(f"Saved boxplot to {output_file}")
+
+
+import os
 def main():
     parser = argparse.ArgumentParser(
         description="Load a results.pkl and plot RMSE/CRPS vs runtime "
@@ -137,10 +289,28 @@ def main():
         default='metrics_with_means.png',
         help='Filename for the output plot'
     )
+    parser.add_argument(
+        '--output-file-boxplot',
+        type=str,
+        default='metrics_with_boxplot.png',
+        help='Filename for the output plot'
+    )
+    parser.add_argument(
+        '--boxplot',
+        type=bool,
+        default=True,
+        help='Whether to plot boxplot'
+    )
     args = parser.parse_args()
 
     results = load_results(args.results_pkl)
-    plot_metrics_with_mean(results, args.output_file)
+    # plot_metrics_with_mean(results, args.output_file)
+    if args.boxplot:
+        parent_dir = os.path.dirname(args.results_pkl)
+        output_file_boxplot = os.path.join(parent_dir, args.output_file_boxplot)
+        plot_metrics_boxplot(results, output_file_boxplot)
+    else:
+        plot_metrics_with_mean(results, args.output_file)
 
 if __name__ == "__main__":
     main()

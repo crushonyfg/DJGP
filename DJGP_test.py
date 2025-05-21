@@ -12,8 +12,11 @@ import math
 from utils1 import jumpgp_ld_wrapper
 # from VI_utils_gpu_acc_UZ_mean import *
 # from VI_utils_gpu_acc_UZ import *
-from VI_utils_gpu_acc_UZ_qumodified_cor import *
+# from check_VI_utils_gpu_acc_UZ_qumodified_cor import *
+# from minibatch_check_VI_utils import *
 from JumpGP_test import *
+from minibatch_check_VI_utils import train_vi_minibatch
+from check_VI_utils_gpu_acc_UZ_qumodified_cor import *
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Test DeepJumpGP model')
@@ -32,7 +35,78 @@ def parse_args():
     parser.add_argument('--MC_num', type=int, default=5,
                         help='Number of Monte Carlo samples for prediction')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
+    parser.add_argument('--use_batch', type=bool, default=False, help='Use batch training')
     return parser.parse_args()
+
+def initialize_model(X_train, Y_train, X_test, Y_test, args, device):
+    """
+    Initialize all model parameters for DJGP.
+    
+    Args:
+        X_train: Training input features
+        Y_train: Training targets
+        X_test: Test input features
+        Y_test: Test targets
+        args: Arguments containing model hyperparameters
+        device: Device to place tensors on
+        
+    Returns:
+        regions: List of region dictionaries
+        V_params: Dictionary of V parameters
+        u_params: List of u parameters
+        hyperparams: Dictionary of hyperparameters
+    """
+    T, D = X_test.shape
+    Q  = args.Q
+    m1 = args.m1
+    m2 = args.m2
+    n  = args.n
+
+    # Build neighborhoods
+    neighborhoods = find_neighborhoods(
+        X_test.cpu(), X_train.cpu(), Y_train.cpu(), M=n
+    )
+    regions = []
+    for i in range(T):
+        X_nb = neighborhoods[i]['X_neighbors'].to(device)   # (n, D)
+        y_nb = neighborhoods[i]['y_neighbors'].to(device)   # (n,)
+        regions.append({
+            'X': X_nb,
+            'y': y_nb,
+            'C': torch.randn(m1, Q, device=device)          # random init
+        })
+
+    # Initialize V_params
+    V_params = {
+        'mu_V':    torch.randn(m2, Q, D, device=device, requires_grad=True),
+        'sigma_V': torch.rand( m2, Q, D, device=device, requires_grad=True),
+    }
+
+    # Initialize u_params
+    u_params = []
+    for _ in range(T):
+        u_params.append({
+            'U_logit':     torch.zeros(1, device=device, requires_grad=True),
+            'mu_u':        torch.randn(m1, device=device, requires_grad=True),
+            'Sigma_u':     torch.eye(m1, device=device, requires_grad=True),
+            'sigma_noise': torch.tensor(0.5, device=device, requires_grad=True),
+            'sigma_k':torch.tensor(0.5, device=device, requires_grad=True),
+            'omega':       torch.randn(Q+1, device=device, requires_grad=True),
+        })
+
+    # Initialize hyperparams
+    X_train_mean = X_train.mean(dim=0)
+    X_train_std  = X_train.std(dim=0)
+    Z = X_train_mean + torch.randn(m2, D, device=device) * X_train_std
+
+    hyperparams = {
+        'Z':             Z,                      # (m2, D)
+        'X_test':        X_test,                 # (T, D)
+        'lengthscales': torch.rand(Q, device=device, requires_grad=True),
+        'var_w':         torch.tensor(1.0, device=device, requires_grad=True),
+    }
+    
+    return regions, V_params, u_params, hyperparams
 
 def main():
     args = parse_args()
@@ -111,15 +185,26 @@ def main():
     # L.backward()
     # print("Gradients OK")
 
-    V_params, u_params, hyperparams = train_vi(
-        regions=regions,
-        V_params=V_params,
-        u_params=u_params,
-        hyperparams=hyperparams,
-        lr=args.lr,
-        num_steps=num_steps,
-        log_interval=50
-    )
+    if not args.use_batch:
+        V_params, u_params, hyperparams = train_vi(
+            regions=regions,
+            V_params=V_params,
+            u_params=u_params,
+            hyperparams=hyperparams,
+            lr=args.lr,
+            num_steps=num_steps,
+            log_interval=50
+        )
+    else: 
+        V_params, u_params, hyperparams = train_vi_minibatch(
+            regions=regions,
+            V_params=V_params,
+            u_params=u_params,
+            hyperparams=hyperparams,
+            lr=args.lr,
+            num_steps=num_steps,
+            log_interval=50
+        )
     print("train OK")
 
     mu_pred, var_pred = predict_vi(

@@ -11,7 +11,8 @@ import math
 from sklearn.model_selection import KFold
 
 from utils1 import jumpgp_ld_wrapper
-from VI_utils_gpu_acc_UZ_qumodified_cor import *
+# from VI_utils_gpu_acc_UZ_qumodified_cor import *
+from check_VI_utils_gpu_acc_UZ_qumodified_cor import *
 from JumpGP_test import *
 
 def parse_args():
@@ -26,7 +27,7 @@ def parse_args():
                         help='Number of global inducing points (overridden if using CV)')
     parser.add_argument('--n', type=int, default=100,
                         help='Number of neighbors per region')
-    parser.add_argument('--num_steps', type=int, default=200,
+    parser.add_argument('--num_steps', type=int, default=500,
                         help='Number of VI training steps')
     parser.add_argument('--MC_num', type=int, default=5,
                         help='Number of Monte Carlo samples for prediction')
@@ -35,11 +36,83 @@ def parse_args():
     # CV-specific
     parser.add_argument('--cv_splits', type=int, default=3,
                         help='Number of folds for cross-validation')
-    parser.add_argument('--Q_list', type=int, nargs='+', default=[3, 4, 5],
+    parser.add_argument('--Q_list', type=int, nargs='+', default=[3, 5, 7],
                         help='List of Q candidates for CV')
     parser.add_argument('--m2_list', type=int, nargs='+', default=[20],
                         help='List of m2 candidates for CV')
+    parser.add_argument('--use_cv', type=bool, default=True,
+                        help='Use CV to select Q and m2')
     return parser.parse_args()
+
+def initialize_model(X_train, Y_train, X_test, Y_test, args, device):
+    """
+    Initialize all model parameters for DJGP.
+    
+    Args:
+        X_train: Training input features
+        Y_train: Training targets
+        X_test: Test input features
+        Y_test: Test targets
+        args: Arguments containing model hyperparameters
+        device: Device to place tensors on
+        
+    Returns:
+        regions: List of region dictionaries
+        V_params: Dictionary of V parameters
+        u_params: List of u parameters
+        hyperparams: Dictionary of hyperparameters
+    """
+    T, D = X_test.shape
+    Q  = args.Q
+    m1 = args.m1
+    m2 = args.m2
+    n  = args.n
+
+    # Build neighborhoods
+    neighborhoods = find_neighborhoods(
+        X_test.cpu(), X_train.cpu(), Y_train.cpu(), M=n
+    )
+    regions = []
+    for i in range(T):
+        X_nb = neighborhoods[i]['X_neighbors'].to(device)   # (n, D)
+        y_nb = neighborhoods[i]['y_neighbors'].to(device)   # (n,)
+        regions.append({
+            'X': X_nb,
+            'y': y_nb,
+            'C': torch.randn(m1, Q, device=device)          # random init
+        })
+
+    # Initialize V_params
+    V_params = {
+        'mu_V':    torch.randn(m2, Q, D, device=device, requires_grad=True),
+        'sigma_V': torch.rand( m2, Q, D, device=device, requires_grad=True),
+    }
+
+    # Initialize u_params
+    u_params = []
+    for _ in range(T):
+        u_params.append({
+            'U_logit':     torch.zeros(1, device=device, requires_grad=True),
+            'mu_u':        torch.randn(m1, device=device, requires_grad=True),
+            'Sigma_u':     torch.eye(m1, device=device, requires_grad=True),
+            'sigma_noise': torch.tensor(0.5, device=device, requires_grad=True),
+            'sigma_k':torch.tensor(0.5, device=device, requires_grad=True),
+            'omega':       torch.randn(Q+1, device=device, requires_grad=True),
+        })
+
+    # Initialize hyperparams
+    X_train_mean = X_train.mean(dim=0)
+    X_train_std  = X_train.std(dim=0)
+    Z = X_train_mean + torch.randn(m2, D, device=device) * X_train_std
+
+    hyperparams = {
+        'Z':             Z,                      # (m2, D)
+        'X_test':        X_test,                 # (T, D)
+        'lengthscales': torch.rand(Q, device=device, requires_grad=True),
+        'var_w':         torch.tensor(1.0, device=device, requires_grad=True),
+    }
+    
+    return regions, V_params, u_params, hyperparams
 
 def run_experiment(X_train, Y_train, X_test, Y_test, args, device):
     """
@@ -172,24 +245,27 @@ def main():
     X_test  = dataset["X_test"].to(device)
     Y_test  = dataset["Y_test"].to(device)
 
-    # Cross-validation to select Q and m2
-    print("Starting CV over Q and m2...")
-    best_score = float('inf')
-    best_params = {'Q': None, 'm2': None}
+    if args.use_cv:
+        # args.MC_num = 3
+        # Cross-validation to select Q and m2
+        print("Starting CV over Q and m2...")
+        best_score = float('inf')
+        best_params = {'Q': None, 'm2': None}
 
-    for Q in args.Q_list:
-        for m2 in args.m2_list:
-            score = cv_score_for_params(X_train, Y_train, args, device, Q, m2)
-            print(f"CV (Q={Q}, m2={m2}) → mean-RMSE = {score:.4f}")
-            if score < best_score:
-                best_score = score
-                best_params = {'Q': Q, 'm2': m2}
+        for Q in args.Q_list:
+            for m2 in args.m2_list:
+                score = cv_score_for_params(X_train, Y_train, args, device, Q, m2)
+                print(f"CV (Q={Q}, m2={m2}) → mean-RMSE = {score:.4f}")
+                if score < best_score:
+                    best_score = score
+                    best_params = {'Q': Q, 'm2': m2}
 
-    print(f"Best hyperparams: Q={best_params['Q']}, m2={best_params['m2']} with RMSE={best_score:.4f}")
+        print(f"Best hyperparams: Q={best_params['Q']}, m2={best_params['m2']} with RMSE={best_score:.4f}")
 
-    # Re-run on full training set + true test set
-    args.Q  = best_params['Q']
-    args.m2 = best_params['m2']
+        # Re-run on full training set + true test set
+        args.Q  = best_params['Q']
+        args.m2 = best_params['m2']
+
     args.MC_num = MC_num
     print("Training final model with selected hyperparameters...")
     rmse, mean_crps, run_time = run_experiment(

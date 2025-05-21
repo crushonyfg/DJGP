@@ -73,6 +73,7 @@ def maximize_PD(x, y, xt, px, pxt, w, logtheta, cv, bVerbose=False):
     nw = np.linalg.norm(w)
     w = w / nw
     nIter = 100
+    # nIter = 50
 
     phi_xt = np.dot(np.hstack(([1], pxt[0])), w) #phi_xt shape (1,Nt)
     w = w * np.sign(phi_xt)
@@ -96,7 +97,7 @@ def maximize_PD(x, y, xt, px, pxt, w, logtheta, cv, bVerbose=False):
             logtheta = minimize(loglikelihood, logtheta, args=(covSum, [covSEard, covNoise], x[r1,:], y[r1] - ms),method='L-BFGS-B', options={'maxiter': nIter}).x
             # logtheta = minimize(loglikelihood, logtheta, args=(covSum, [covSEard, covNoise], x[r1,:], y[r1] - ms),method='L-BFGS-B').x
         except:
-            print(f"maximize_PD func, we fail at iteration {k}")
+            # print(f"maximize_PD func, we fail at iteration {k}")
             err_flag = True
 
         # 20250110

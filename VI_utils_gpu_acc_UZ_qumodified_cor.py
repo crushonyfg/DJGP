@@ -41,7 +41,15 @@ def kl_qp(Z: torch.Tensor,
         ell = lengthscales[q] if lengthscales.ndim > 0 else lengthscales
         wvar = var_w[q] if var_w.ndim > 0 else var_w
         Kq = wvar * torch.exp(-0.5 * d2 / (ell**2))
+
+        # 20250509
+        # jitter = 1e-6
+        # I = torch.eye(Kq.size(-1), dtype=Kq.dtype, device=Kq.device)
+        # Kq = Kq + jitter * I
+
         L = torch.linalg.cholesky(Kq)
+        # L = safe_cholesky(Kq)   
+
         Kq_inv = torch.cholesky_inverse(L)
         diag_inv = torch.diagonal(Kq_inv)
         logdet_Kq = 2.0 * torch.log(torch.diagonal(L)).sum()
@@ -55,6 +63,30 @@ def kl_qp(Z: torch.Tensor,
     return kl
 
 # ===== q(W) posterior =====
+import torch
+
+def safe_cholesky(K, init_jitter=1e-6, max_tries=5, jitter_multiplier=10.0):
+    """
+    对称矩阵 K 添加 jitter 做 Cholesky。
+    若失败，则指数级放大 jitter 并重试 max_tries 次。
+    """
+    n = K.size(-1)
+    jitter = init_jitter
+    I = torch.eye(n, dtype=K.dtype, device=K.device)
+    for _ in range(max_tries):
+        try:
+            return torch.linalg.cholesky(K + jitter * I)
+        except RuntimeError as e:
+            # 如果是正定失败，放大 jitter 再试
+            if 'not positive-definite' in str(e):
+                jitter *= jitter_multiplier
+            else:
+                # 其他错误，直接抛
+                raise
+    # 最后一次尝试，若仍失败，就让它抛出
+    return torch.linalg.cholesky(K + jitter * I)
+
+
 def qW_from_qV(X: torch.Tensor,
                Z: torch.Tensor,
                mu_V: torch.Tensor,
@@ -70,6 +102,13 @@ def qW_from_qV(X: torch.Tensor,
     for q in range(Q):
         l = lengthscales[q]
         Kzz = var_w * torch.exp(-0.5 * ZZ2 / (l**2))
+
+        # 20250509
+        # L = safe_cholesky(Kzz)
+        # jitter = 1e-6
+        # I = torch.eye(Kzz.size(-1), dtype=Kzz.dtype, device=Kzz.device)
+        # Kzz = Kzz + jitter * I
+
         Kxz = var_w * torch.exp(-0.5 * XZ2 / (l**2))
         L = torch.linalg.cholesky(Kzz)
         Kzz_inv = torch.cholesky_inverse(L)

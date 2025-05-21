@@ -83,7 +83,7 @@ def generate_Y(z, noise_std=0.1, caseno=None):
 def generate_Y_from_image_rff(
     z: torch.Tensor,
     caseno: int,
-    noise_std: float = 0.1,
+    noise_std: float = 1,
     kernel_var: float = 1.0,
     lengthscale: float = 1.0,
     num_features: int = 500
@@ -475,14 +475,16 @@ def generate_data1(args):
 
     # 2. 随机傅里叶特征映射到高维 Z_all
     #    M: 高维特征数，sigma: 控制核宽度
-    z_all = random_fourier_features(X_all, M=args.Q, sigma=1)  # (N+T, M)
+    noise_std = 3
+    z_all = random_fourier_features(X_all, M=args.Q, sigma=noise_std)  # (N+T, M)
+    
 
     # z_all = torch.cat([z_train, z_test], dim=0) 
     if z_all.shape[1] == 2:
         Y_all = generate_Y_from_image_rff(
             z_all,
             caseno    = args.caseno,
-            noise_std = 1.0,
+            noise_std = noise_std,
             kernel_var = 1.0,
             lengthscale = 1.0,
             num_features = 500
@@ -501,7 +503,9 @@ def generate_data1(args):
             z_all,
             regions       = regions,
             default_mean  = -5.0,
-            noise_std     = 0.1,
+            # noise_std     = 0.1,
+            # noise_std     = 1,
+            noise_std     = noise_std,
             kernel_var    = 1.0,
             lengthscale   = 1.0,
             num_features  = 500

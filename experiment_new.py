@@ -166,20 +166,20 @@ def plot_metrics(results):
     
     colors = {
         'JumpGP':     'blue',
-        'JumpGPsir':  'red',
+        'JumpGPsirGlobal':  'red',
         'DeepGP':     'green',
         'DJGP':       'cyan',
-        'GPsir':      'purple',
+        'JumpGPsirLocal':      'purple',
         'GP':         'orange',
         'NNJGP':       'magenta',   # 新增
         'BNNJGP':      'brown',
     }
     markers = {
         'JumpGP':     'o',
-        'JumpGPsir':  's',
+        'JumpGPsirGlobal':  's',
         'DeepGP':     '^',
         'DJGP':       '*',
-        'GPsir':      'D',
+        'JumpGPsirLocal':      'D',
         'GP':         'v',
         'NNJGP':       'X',         # 新增
         'BNNJGP':      'o',
@@ -260,25 +260,45 @@ def plot_metrics_with_mean(results: dict, output_file: str):
     axes = axes.ravel()
 
     # Color and marker map for each base method
+    # colors = {
+    #     'JumpGP':    'blue',
+    #     'JumpGPsir': 'red',
+    #     'DeepGP':    'green',
+    #     'DJGP':      'cyan',
+    #     'GPsir':     'purple',
+    #     'GP':        'orange',
+    #     'NNJGP':     'magenta',
+    #     'BNNJGP':    'brown',
+    # }
+    # markers = {
+    #     'JumpGP':    'o',
+    #     'JumpGPsir': 's',
+    #     'DeepGP':    '^',
+    #     'DJGP':      '*',
+    #     'GPsir':     'D',
+    #     'GP':        'v',
+    #     'NNJGP':     'X',
+    #     'BNNJGP':    'P',
+    # }
     colors = {
-        'JumpGP':    'blue',
-        'JumpGPsir': 'red',
-        'DeepGP':    'green',
-        'DJGP':      'cyan',
-        'GPsir':     'purple',
-        'GP':        'orange',
-        'NNJGP':     'magenta',
-        'BNNJGP':    'brown',
+        'JumpGP':     'blue',
+        'JumpGPsirGlobal':  'red',
+        'DeepGP':     'green',
+        'DJGP':       'cyan',
+        'JumpGPsirLocal':      'purple',
+        'GP':         'orange',
+        'NNJGP':       'magenta',   # 新增
+        'BNNJGP':      'brown',
     }
     markers = {
-        'JumpGP':    'o',
-        'JumpGPsir': 's',
-        'DeepGP':    '^',
-        'DJGP':      '*',
-        'GPsir':     'D',
-        'GP':        'v',
-        'NNJGP':     'X',
-        'BNNJGP':    'P',
+        'JumpGP':     'o',
+        'JumpGPsirGlobal':  's',
+        'DeepGP':     '^',
+        'DJGP':       '*',
+        'JumpGPsirLocal':      'D',
+        'GP':         'v',
+        'NNJGP':       'X',         # 新增
+        'BNNJGP':      'o',
     }
 
     # 1) Compute mean RMSE per base method
@@ -361,28 +381,105 @@ def plot_metrics_with_mean(results: dict, output_file: str):
     plt.close()
     print(f"Saved plot with mean lines to {output_file}")
 
+def plot_metrics_boxplot(results: dict, output_file: str):
+    """
+    对每个方法在 RMSE 和 CRPS 上绘制 boxplot，方法动态识别，
+    不再假定事先知道有哪些 base。
+    """
+    metrics = ['rmse', 'crps']
+    fig, axes = plt.subplots(1, 2, figsize=(15, 7))
+    axes = axes.ravel()
+
+    # 预定义常见方法的颜色，未知方法使用 'gray'
+    colors = {
+        'JumpGP':    'blue',
+        'JumpGPsirGlobal': 'red',
+        'DeepGP':    'green',
+        'LMJGP':      'cyan',
+        'GPsir':     'purple',
+        'GP':        'orange',
+        'NNJGP':     'magenta',
+        'BNNJGP':    'brown',
+    }
+    default_color = 'gray'
+
+    # 动态收集每个 base 方法在所有 runs 上的 (rmse, crps)
+    metric_by_method = {}
+    for run_res in results.values():
+        for method, vals in run_res.items():
+            base = method.split('_')[0]
+            # 将 DJGP 替换为 LMJGP
+            if base == 'DJGP':
+                base = 'LMJGP'
+            # 提取指标值
+            raw_rmse, raw_crps = vals[0], vals[1]
+            rmse = (raw_rmse.detach().cpu().item()
+                    if isinstance(raw_rmse, torch.Tensor)
+                    else float(raw_rmse))
+            crps = (raw_crps.detach().cpu().item()
+                    if isinstance(raw_crps, torch.Tensor)
+                    else float(raw_crps))
+            metric_by_method.setdefault(base, []).append((rmse, crps))
+
+    # 准备排序后的标签列表，保证图中方法顺序一致
+    labels = sorted(metric_by_method.keys())
+
+    # 对每个指标画 boxplot
+    for i, metric in enumerate(metrics):
+        ax = axes[i]
+        data = [
+            [entry[i] for entry in metric_by_method[base]]
+            for base in labels
+        ]
+
+        # 绘制 boxplot
+        bp = ax.boxplot(
+            data,
+            tick_labels=labels,
+            patch_artist=True,
+            showfliers=False
+        )
+        # 根据方法名上色
+        for patch, base in zip(bp['boxes'], labels):
+            color = colors.get(base, default_color)
+            # patch.set_facecolor(color)
+            patch.set_facecolor('gray')
+            patch.set_edgecolor('black')
+
+        ax.set_title(f'{metric.upper()} by Method')
+        ax.set_ylabel(metric.upper())
+        ax.grid(True, axis='y')
+        ax.tick_params(axis='x', rotation=45)
+
+    plt.tight_layout()
+    plt.savefig(output_file, bbox_inches='tight', dpi=300)
+    plt.close()
+    print(f"Saved boxplot to {output_file}")
+
 def main():
     # 实验设置
-    L = 20   # 不同数据集生成次数
+    L = 10   # 不同数据集生成次数
     T = 1   # DeepGP/DJGP/SIR 循环次数
-    N = 1500
+    N = 1000
     T_param = 100
-    D = 20
+    D = 100
     caseno = 5
     M = 25
-    Q = 4
-    K = Q
+    Q = 8
+    K = 3
     use_cv = False
+    # use_cv = True
     
     results = {}
 
     # 动态导入模块
     if Q>2:
     # data_generate = import_module('data_generate')
-        data_generate = import_module('new_data_gen')
+        data_generate = import_module('new_highdata_gen')
     else:
         data_generate = import_module('data_generate')
-    JumpGP_test   = import_module('JumpGP_test')
+    JumpGP_test   = import_module('JumpGP_test_CV')
+    JumpGP_test_local   = import_module('JumpGP_test_local')
     DeepGP_test   = import_module('DeepGP_test')
     if use_cv: 
         DJGP_test     = import_module('DJGP_CV')
@@ -398,15 +495,27 @@ def main():
         res_i = {}
         
         # 1. 生成数据
-        args_data = {
-            'N': N,
-            'T': T_param,
-            'D': D,
-            'caseno': caseno,
-            'device': 'cpu',
-            'latent_dim': 2,
-            'Q': Q
-        }
+        if Q==2:
+            args_data = {
+                'N': N,
+                'T': T_param,
+                'D': D,
+                'caseno': caseno,
+                'device': 'cpu',
+                'latent_dim': 2,
+                'ins_dim': True,
+                'Q': Q
+            }
+            if Q==D:
+                args_data['ins_dim'] = False
+        else:
+            args_data = {
+                'N': N,
+                'Nt': T_param,
+                'H': D,
+                'd': Q,
+                'device': 'cpu'
+            }
         folder_name = run_with_args(data_generate, args_data)
         print(f"Data generated in folder: {folder_name}")
         
@@ -425,11 +534,24 @@ def main():
             'M': M,
             'device': 'cpu',
             'use_sir': True,
+            'use_cv': True,
             'sir_H': D,
             'sir_K': K
         }
-        res_i['JumpGPsir'] = run_with_args(JumpGP_test, args_jump_sir)
+        res_i['JumpGPsirGlobal'] = run_with_args(JumpGP_test, args_jump_sir)
         print("JumpGP with SIR completed")
+
+        # # 3. JumpGP + SIR
+        # args_jump_sir = {
+        #     'folder_name': folder_name,
+        #     'M': M,
+        #     'device': 'cpu',
+        #     'use_sir': True,
+        #     'sir_H': D,
+        #     'sir_K': K
+        # }
+        # res_i['JumpGPsirLocal'] = run_with_args(JumpGP_test_local, args_jump_sir)
+        # print("JumpGP with SIR completed")
 
         # 4. DeepGP, DJGP, SIR_GP 多次迭代
         for j in range(T):
@@ -439,7 +561,7 @@ def main():
             args_deep = {
                 'folder_name': folder_name,
                 'hidden_dim': K,
-                'num_epochs': 300,
+                'num_epochs': 500,
                 'patience': 5,
                 'batch_size': 1024,
                 'lr': 0.01
@@ -450,7 +572,7 @@ def main():
             # DJGP
             args_djgp = {
                 'folder_name': folder_name,
-                'num_steps': 300,
+                'num_steps': 600,
                 'n': M,
                 'Q': K,
                 # 'MC_num': 5,
@@ -474,17 +596,17 @@ def main():
             # res_i[f'NNJGP_{j}'] = run_with_args(NNJGP_test, args_nnjgp)
             # print(f"    NNJGP iteration {j+1} completed")
 
-            args_bnnjgp = {
-                'folder_name': folder_name,
-                'steps': 300,
-                'n': M,
-                'Q': K,
-                # 'MC_num': 5,
-                'm1': 5,
-                'lr': 0.01
-            }
-            res_i[f'BNNJGP_{j}'] = run_with_args(BNNJGP_test, args_bnnjgp)
-            print(f"    BNNJGP iteration {j+1} completed")
+            # args_bnnjgp = {
+            #     'folder_name': folder_name,
+            #     'steps': 300,
+            #     'n': M,
+            #     'Q': K,
+            #     # 'MC_num': 5,
+            #     'm1': 5,
+            #     'lr': 0.01
+            # }
+            # res_i[f'BNNJGP_{j}'] = run_with_args(BNNJGP_test, args_bnnjgp)
+            # print(f"    BNNJGP iteration {j+1} completed")
             
             # SIR_GP
             # args_sir = {
@@ -506,7 +628,8 @@ def main():
     # 保存并绘图
     save_results(results)
     # plot_metrics(results)
-    plot_metrics_with_mean(results, 'metrics_with_means.png')
+    # plot_metrics_with_mean(results, 'metrics_with_means.png')
+    plot_metrics_boxplot(results, 'metrics_with_boxplot.png')
     print("\nExperiment completed successfully.")
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from scipy.linalg import fractional_matrix_power
 from scipy.sparse.linalg import eigs
 import argparse
 from utils1 import jumpgp_ld_wrapper
+from tqdm import tqdm
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Test JumpGP model')
@@ -31,6 +32,8 @@ def parse_args():
                       help='Number of slices for SIR')
     parser.add_argument('--sir_K', type=int, default=2,
                       help='Number of components to keep in SIR')
+    parser.add_argument('--use_cv', action='store_true',
+                        help='Whether to cross-validate sir_K')
     return parser.parse_args()
 
 def apply_sir_reduction(X_train, Y_train, X_test, args):
@@ -314,6 +317,13 @@ def find_neighborhoods(X_test, X_train, Y_train, M):
 def compute_metrics(predictions, sigmas, Y_test):
     """Compute RMSE and mean CRPS for Gaussian predictive distributions."""
     # 计算 RMSE
+    predictions = torch.as_tensor(predictions)
+    device = predictions.device
+
+    # 统一转换为 tensor 并放到同一设备
+    sigmas = torch.as_tensor(sigmas, device=device)
+    Y_test = torch.as_tensor(Y_test, device=device)
+
     rmse = torch.sqrt(torch.mean((predictions - Y_test)**2))
     
     # 计算 CRPS
@@ -330,7 +340,7 @@ def compute_metrics(predictions, sigmas, Y_test):
     
     return rmse, mean_crps
 
-def evaluate_jumpgp(X_test, Y_test, neighborhoods, device):
+def evaluate_jumpgp(X_test, Y_test, neighborhoods, device, std=None):
     """Evaluate JumpGP model on test data"""
     T = X_test.shape[0]
     jump_gp_results = []
@@ -339,7 +349,7 @@ def evaluate_jumpgp(X_test, Y_test, neighborhoods, device):
     # 记录开始时间
     start_time = time.time()
     
-    for t in range(T):
+    for t in tqdm(range(T)):
         neigh = neighborhoods[t]
         X_neigh = neigh["X_neighbors"]
         y_neigh = neigh["y_neighbors"]
@@ -363,6 +373,10 @@ def evaluate_jumpgp(X_test, Y_test, neighborhoods, device):
     # 转换预测结果为tensor
     predictions = torch.tensor([x.detach().item() for x in jump_gp_results])
     sigmas = torch.tensor([s.detach().item() for s in jump_gp_res_sig])
+
+    if std is not None:
+        predictions = predictions * std[1] + std[0]
+        sigmas = sigmas * std[1]
     
     # 计算评估指标
     # rmse, q25, q50, q75 = compute_metrics(predictions, sigmas, Y_test)

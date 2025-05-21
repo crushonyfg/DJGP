@@ -39,7 +39,9 @@ def local_linearfit(x0, y0, xt):
     XWy = X.T @ np.diag(Kh) @ y0
     
     # Solve for beta
-    beta = np.linalg.solve(XWX, XWy)
+    # beta = np.linalg.solve(XWX, XWy)
+    beta = np.linalg.solve(XWX + 1e-6 * np.eye(XWX.shape[0]), XWy)
+
     
     return beta, X
 
