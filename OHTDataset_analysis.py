@@ -45,7 +45,7 @@ def select_representative_points(X_train, Y_train, M, random_state=0):
 import os
 os.environ["LOKY_MAX_CPU_COUNT"] = "8"
 # models = ['JGP', 'DGP', 'LMJGP']
-models = ['LMJGP']
+models = ['LMJGP', 'JGP']
 
 from scipy.io import loadmat
 
@@ -62,7 +62,7 @@ Y_test = data['yt']
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-use_subsample = False
+use_subsample = True
 if use_subsample:
     X_test, Y_test, selected_indices = select_representative_points(X_test, Y_test, 500)
 

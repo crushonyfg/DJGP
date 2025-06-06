@@ -855,6 +855,10 @@ def predict_vi(regions,
     # 2) Sample W: [M,T,Q,D]
     eps = torch.randn((M, T, mu_W.shape[1], mu_W.shape[2]), device=device)
     W_samples = mu_W.unsqueeze(0) + eps * sigma_W.unsqueeze(0)
+
+    norms = torch.norm(W_samples, p=2, dim=-1, keepdim=True)  # [M,T,Q,1]
+    W_samples = W_samples / norms
+    
     # 3) Allocate predictions
     mu_s = torch.zeros((M, T), device=device)
     var_s = torch.zeros((M, T), device=device)
