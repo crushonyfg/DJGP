@@ -566,8 +566,12 @@ def compute_ELBO(regions, V_params, u_params, hyperparams, ell=3, debug_threshol
     V1   = sigma_k.view(-1,1)**2 - torch.einsum('tij,tnji->tn', Kuu_inv, KufKfu)
     v    = torch.einsum('tij,tj->ti', Kuu_inv, mu_u)   # [T,m1]
     E_fu = torch.einsum('tni,ti->tn', Kfu, v)          # [T,n]
-    T3   = torch.einsum('tij,tnjk,tkm,tmi->tn',
-                       Kuu_inv, KufKfu, Kuu_inv, Sigma_u)  # [T,n]
+
+    Sigma_u_tilde = Sigma_u + torch.einsum('ti,tj->tij', mu_u, mu_u)
+    T3 = torch.einsum('tij,tnjk,tkm,tmi->tn',
+                      Kuu_inv, KufKfu, Kuu_inv, Sigma_u_tilde)
+    # T3   = torch.einsum('tij,tnjk,tkm,tmi->tn',
+    #                    Kuu_inv, KufKfu, Kuu_inv, Sigma_u)  # [T,n]
     quad = (y.pow(2) - 2*y*E_fu + (V1 + T3)) / (2 * sigma_noise.view(-1,1)**2)
 
     elog_sig, elog_one_minus = expected_log_sigmoid_gh_batch(omega, mu_W, cov_W, X)

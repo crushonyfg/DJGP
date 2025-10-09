@@ -80,10 +80,12 @@ def maximize_PD(x, y, xt, px, pxt, w, logtheta, cv, bVerbose=False):
     gx, phi_x = calculate_gx(px, w)
     
     r = gx >= 0
-    # if r.sum() < 1:
-    #     gx = -gx
-    #     w = -w
-    #     r = ~r
+
+    # modified in 20250719
+    if r.sum() < 1:
+        gx = -gx
+        w = -w
+        r = ~r
     # r = np.squeeze(r)
     
     if bVerbose:
@@ -129,11 +131,12 @@ def maximize_PD(x, y, xt, px, pxt, w, logtheta, cv, bVerbose=False):
         r = pos_z >= 0.5
 
         # prevent all r are False(need to be modified)
-        # if not r.any():  # r 中没有任何 True 值
-        #     # 找到 pos_z 中最大值的位置
-        #     max_index = np.argmax(pos_z)
-        #     # 将该位置的 r 值设为 True
-        #     r[max_index] = True
+        # modified in 20250719
+        if not r.any():  # r 中没有任何 True 值
+            # 找到 pos_z 中最大值的位置
+            max_index = np.argmax(pos_z)
+            # 将该位置的 r 值设为 True
+            r[max_index] = True
         # r1 = r.flatten()
         
         def wfun(wo):

@@ -15,7 +15,7 @@ from utils1 import jumpgp_ld_wrapper
 # from check_VI_utils_gpu_acc_UZ_qumodified_cor import *
 # from minibatch_check_VI_utils import *
 from JumpGP_test import *
-from minibatch_check_VI_utils import train_vi_minibatch
+from new_minibatch_try import train_vi_minibatch
 from check_VI_utils_gpu_acc_UZ_qumodified_cor import *
 
 def parse_args():
@@ -30,6 +30,8 @@ def parse_args():
                         help='Number of global inducing points')
     parser.add_argument('--n', type=int, default=100,
                         help='Number of neighbors per region')
+    parser.add_argument('--batch_size', type=int, default=64,
+                        help='Number of batch size')
     parser.add_argument('--num_steps', type=int, default=200,
                         help='Number of VI training steps')
     parser.add_argument('--MC_num', type=int, default=5,
@@ -196,14 +198,21 @@ def main():
             log_interval=50
         )
     else: 
-        V_params, u_params, hyperparams = train_vi_minibatch(
-            regions=regions,
-            V_params=V_params,
-            u_params=u_params,
-            hyperparams=hyperparams,
-            lr=args.lr,
-            num_steps=num_steps,
-            log_interval=50
+        # V_params, u_params, hyperparams = train_vi_minibatch(
+        #     regions=regions,
+        #     V_params=V_params,
+        #     u_params=u_params,
+        #     hyperparams=hyperparams,
+        #     lr=args.lr,
+        #     num_steps=num_steps,
+        #     log_interval=50
+        # )
+        hyperparams_trained = train_vi_minibatch(
+        regions, V_params, u_params, hyperparams,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        num_steps=num_steps,
+        log_interval=50
         )
     print("train OK")
 

@@ -37,6 +37,8 @@ def parse_args():
                         help='Whether to cross-validate sir_K')
     parser.add_argument('--cv_folds', type=int, default=3,
                         help='Number of CV folds when selecting sir_K')
+    parser.add_argument('--return_dim', type=str, default="False",
+                        help='whether to return the dimension of the data')
     parser.add_argument('--sir_K_list', nargs='+', type=int,
                         default=[3],
                         help='候选的 sir_K 值列表，默认 1…d')
@@ -161,8 +163,8 @@ class SIR:
         for i in range(n):
             if i >= cum_counts[slice_idx]:
                 slice_idx += 1
-            muh[slice_idx] += z[i]
-            wh[slice_idx]  += w[i]
+            muh[slice_idx] += np.real(z[i])
+            wh[slice_idx]  += np.real(w[i])
         muh = muh / (wh * n)
 
         # Build SIR matrix M
@@ -263,15 +265,20 @@ def evaluate_jumpgp(X_test, Y_test, neighborhoods, device, std=None):
         y_neigh = neigh["y_neighbors"]
         x_t_test = X_test[t]
         
-        mu_t, sig2_t, _, _ = jumpgp_ld_wrapper(
-            X_neigh, 
-            y_neigh.view(-1, 1), 
-            x_t_test.view(1, -1), 
-            mode="CEM", 
-            flag=False, 
-            device=device
-        )
-        
+        try:
+            mu_t, sig2_t, _, _ = jumpgp_ld_wrapper(
+                X_neigh, 
+                y_neigh.view(-1, 1), 
+                x_t_test.view(1, -1), 
+                mode="CEM", 
+                flag=False, 
+                device=device
+            )
+        except Exception as e:
+            print(f"Error at test point {t}: {e}")
+            mu_t = torch.zeros_like(y_neigh)
+            sig2_t = torch.ones_like(y_neigh)
+
         jump_gp_results.append(mu_t)
         jump_gp_res_sig.append(torch.sqrt(sig2_t))
     
@@ -337,6 +344,8 @@ def main():
             print(f'→ 选定 sir_K = {best_K}（CV RMSE={best_score:.4f}）')
 
         # —— 2) 真正用最终的 args.sir_K 做一次降维 —— 
+        if not args.sir_K:
+            args.sir_K = 5
         X_train, X_test = apply_sir_reduction(X_train, Y_train, X_test, args)
         print(f"Data dimensionality reduced to {X_train.shape[1]}")
     
@@ -356,7 +365,10 @@ def main():
     print(f"CRPS: {result[1]:.4f}")
     print(f"Runtime: {result[2]:.2f} seconds")
     
-    return result
+    if args.return_dim == "False":
+        return result
+    else:
+        return result, args.sir_K
 
 if __name__ == "__main__":
     main()

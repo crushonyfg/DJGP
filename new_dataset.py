@@ -436,7 +436,7 @@ for dataset_name in dataset_candidates:
             pickle.dump(total_res, f)
 
 
-filename = 'total_res_finalversion.pkl'
+filename = 'corrected_total_res_finalversion.pkl'
 
 # 保存数据
 with open(filename, 'wb') as f:
