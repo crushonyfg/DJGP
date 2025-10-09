@@ -267,59 +267,7 @@ def expected_log_sigmoid_gh_batch(omega, mu_W, cov_W, X):
     E2 = _factor * (_weights.view(1,1,-1) * log_one_minus).sum(dim=-1)
     return E1, E2
 
-# # ===== 批量 ELBO =====
-# def compute_ELBO(regions, V_params, u_params, hyperparams, ell=3):
-#     T = len(regions)
-#     # 堆叠 regions
-#     X = torch.stack([r['X'] for r in regions],0)  # [T,n,D]
-#     y = torch.stack([r['y'] for r in regions],0)  # [T,n]
-#     C = torch.stack([r['C'] for r in regions],0)  # [T,m1,Q]
-#     # Uconst = torch.tensor([r['U'] for r in regions],device=device)
-#     U_logit = torch.stack([u['U_logit'] for u in u_params], dim=0)  # [T,1] or [T]
-#     U = torch.sigmoid(U_logit).view(-1,1)
 
-#     # 提取 hyperparams
-#     Z = hyperparams['Z']            # [m2,D]
-#     lengthscales = hyperparams['lengthscales']
-#     var_w = hyperparams['var_w']
-#     X_test = hyperparams['X_test']  # [T,D]
-#     mu_V    = V_params['mu_V']      # [m2,Q,D]
-#     sigma_V = V_params['sigma_V']   # [m2,Q,D]
-
-#     KL_V = kl_qp(Z, mu_V, sigma_V, lengthscales, var_w)
-#     mu_W, cov_W = qW_from_qV(X_test, Z, mu_V, sigma_V, lengthscales, var_w)
-
-#     sigma_noise = torch.stack([u['sigma_noise'] for u in u_params],0) # [T]
-#     omega       = torch.stack([u['omega'] for u in u_params],0)       # [T,Q+1]
-#     mu_u        = torch.stack([u['mu_u'] for u in u_params],0)       # [T,m1]
-#     Sigma_u     = torch.stack([u['Sigma_u'] for u in u_params],0)    # [T,m1,m1]
-
-#     # Kuu
-#     m1 = C.shape[1]
-#     d2 = (C.unsqueeze(2)-C.unsqueeze(1)).pow(2).sum(-1)
-#     I = torch.eye(m1,device=device).unsqueeze(0)
-#     Kuu = torch.exp(-0.5*d2) + sigma_noise.view(-1,1,1)*I
-#     Luu = torch.linalg.cholesky(Kuu)
-#     Kuu_inv = torch.cholesky_inverse(Luu)
-
-#     # Kfu, KufKfu
-#     Kfu    = expected_Kfu(mu_W, cov_W, X, C, sigma_noise)
-#     KufKfu = expected_KufKfu(mu_W, cov_W, X, C, sigma_noise)
-
-#     # V1, E_fu, T3
-#     V1 = sigma_noise.view(-1,1)**2 - torch.einsum('tij,tnji->tn',Kuu_inv,KufKfu)
-#     v  = torch.einsum('tij,tj->ti',Kuu_inv,mu_u)
-#     E_fu  = torch.einsum('tni,ti->tn',Kfu,v)
-#     T3 = torch.einsum('tij,tnjk,tkm,tmi->tn',Kuu_inv,KufKfu,Kuu_inv,Sigma_u)
-
-#     quad = (y.pow(2) - 2*y*E_fu + (V1+T3)) / (2*sigma_noise.view(-1,1)**2)
-#     elog_sig, elog_one_minus = expected_log_sigmoid_gh_batch(omega,mu_W,cov_W,X)
-#     T1 = -0.5*_LOG_2PI - torch.log(sigma_noise.view(-1,1)**2)/2 + elog_sig - quad
-#     # T2 = torch.log(Uconst.view(-1,1)) + elog_one_minus
-#     T2 = torch.log(U) + elog_one_minus
-
-#     region_elbo = torch.logsumexp(torch.stack([T1,T2],0),dim=0).sum(dim=-1)
-#     return -KL_V + region_elbo.sum()
 import torch
 import math
 
@@ -386,90 +334,6 @@ def kl_q_u_batch(Z: torch.Tensor,
 
     return kl  # [T]
 
-
-# def compute_ELBO(regions, V_params, u_params, hyperparams, ell=3):
-#     """
-#     Batched ELBO = ∑_t [ E_q[log p(y_t|u_t,W_t)] + E_q[log p(U_t|ω,W_t)] ]
-#                   - KL(q(V)||p(V)) - ∑_t KL(q(u_t)||p(u_t))
-#     regions:    list of dict { 'X':[n,D], 'y':[n], 'C':[m1,Q] }
-#     V_params:   { 'mu_V':[m2,Q,D], 'sigma_V':[m2,Q,D] }
-#     u_params:   list of dict { 'U_logit':[1], 'mu_u':[m1], 'Sigma_u':[m1,m1],
-#                              'sigma_noise', scalar, 'omega':[Q+1] }
-#     hyperparams:{ 'Z':[m2,D], 'X_test':[T,D], 'lengthscales':[Q], 'var_w', scalar }
-#     """
-#     T = len(regions)
-#     device = regions[0]['X'].device
-
-#     # stack region data
-#     X       = torch.stack([r['X'] for r in regions], dim=0)       # [T,n,D]
-#     y       = torch.stack([r['y'] for r in regions], dim=0)       # [T,n]
-#     C       = torch.stack([r['C'] for r in regions], dim=0)       # [T,m1,Q]
-#     U_logit = torch.stack([u['U_logit'] for u in u_params], dim=0).view(-1,1)  # [T,1]
-#     U       = torch.sigmoid(U_logit)                              # [T,1]
-
-#     # extract hyperparams
-#     Z            = hyperparams['Z']            # [m2,D]
-#     X_test       = hyperparams['X_test']       # [T,D]
-#     lengthscales = hyperparams['lengthscales'] # [Q]
-#     var_w        = hyperparams['var_w']        # scalar
-
-#     # V variational params
-#     mu_V    = V_params['mu_V']    # [m2,Q,D]
-#     sigma_V = V_params['sigma_V'] # [m2,Q,D]
-
-#     # KL(q(V)||p(V))
-#     KL_V = kl_qp(Z, mu_V, sigma_V, lengthscales, var_w)
-
-#     # q(W) posterior
-#     mu_W, cov_W = qW_from_qV(
-#         X_test, Z, mu_V, sigma_V, lengthscales, var_w
-#     )  # mu_W:[T,Q,D], cov_W:[T,Q,D,D]
-
-#     # collect u params
-#     sigma_noise = torch.stack([u['sigma_noise'] for u in u_params], dim=0).view(-1)  # [T]
-#     sigma_k = torch.stack([u['sigma_k'] for u in u_params], dim=0).view(-1)  # [T]
-#     mu_u        = torch.stack([u['mu_u']        for u in u_params], dim=0)         # [T,m1]
-#     Sigma_u     = torch.stack([u['Sigma_u']     for u in u_params], dim=0)         # [T,m1,m1]
-#     omega       = torch.stack([u['omega']       for u in u_params], dim=0)         # [T,Q+1]
-
-#     # KL(q(u)||p(u)) summed over regions
-#     qu1 = torch.tensor(1.0, device=device, requires_grad=False)
-#     KL_u = kl_q_u_batch(C, mu_u, Sigma_u, qu1).sum()
-
-#     # build prior Kuu and its inverse
-#     m1   = C.shape[1]
-#     d2   = (C.unsqueeze(2) - C.unsqueeze(1)).pow(2).sum(-1)     # [T,m1,m1]
-#     I    = torch.eye(m1, device=device).unsqueeze(0)           # [1,m1,m1]
-#     # Kuu  = torch.exp(-0.5 * d2) + sigma_noise.view(-1,1,1) * I # [T,m1,m1]
-#     Kuu  = torch.exp(-0.5 * d2)                                  # [T,m1,m1]
-#     Luu  = torch.linalg.cholesky(Kuu)                          # [T,m1,m1]
-#     Kuu_inv = torch.cholesky_inverse(Luu)                      # [T,m1,m1]
-
-#     # expected covariances
-#     Kfu     = expected_Kfu(mu_W, cov_W, X, C, sigma_k)     # [T,n,m1]
-#     KufKfu = expected_KufKfu(mu_W, cov_W, X, C, sigma_k)   # [T,m1,m1]
-
-#     # data-dependent terms
-#     V1   = sigma_k.view(-1,1)**2 - torch.einsum('tij,tnji->tn', Kuu_inv, KufKfu)
-#     v    = torch.einsum('tij,tj->ti', Kuu_inv, mu_u)           # [T,m1]
-#     E_fu = torch.einsum('tni,ti->tn', Kfu, v)                  # [T,n]
-#     T3   = torch.einsum('tij,tnjk,tkm,tmi->tn',
-#                        Kuu_inv, KufKfu, Kuu_inv, Sigma_u)      # [T,n]
-#     quad = (y.pow(2) - 2*y*E_fu + (V1 + T3)) / (2 * sigma_noise.view(-1,1)**2)
-
-#     elog_sig, elog_one_minus = expected_log_sigmoid_gh_batch(
-#         omega, mu_W, cov_W, X
-#     )  # [T,n], [T,n]
-
-#     T1 = -0.5 * _LOG_2PI - torch.log(sigma_noise.view(-1,1)**2) / 2 \
-#          + elog_sig - quad
-#     T2 = torch.log(U) + elog_one_minus
-
-#     # region-wise ELBO contributions
-#     region_elbo = torch.logsumexp(torch.stack([T1, T2], dim=0), dim=0).sum(dim=-1)  # [T]
-
-#     # total ELBO
-#     return region_elbo.sum() - KL_V - KL_u
 
 import torch.nn as nn
 import torch.nn.functional as F
@@ -618,36 +482,6 @@ def compute_ELBO(regions, V_params, u_params, hyperparams, ell=3, debug_threshol
     # return elbo_norm
     return elbo/T
 
-
-# ===== 训练和预测 =====
-# def train_vi(regions,
-#              V_params,
-#              u_params,
-#              hyperparams,
-#              lr=1e-3,
-#              num_steps=1000,
-#              log_interval=100):
-#     params = [V_params['mu_V'], V_params['sigma_V']]
-#     for u in u_params:
-#         params += [u['U_logit'], u['mu_u'], u['Sigma_u'], u['sigma_noise'], u['omega']]
-#     params += [hyperparams['lengthscales'], hyperparams['var_w']]
-#     params += [hyperparams['Z']]
-#     opt = torch.optim.Adam(params, lr=lr)
-#     for step in range(1, num_steps+1):
-#         opt.zero_grad()
-#         elbo = compute_ELBO(regions, V_params, u_params, hyperparams)
-#         loss = -elbo
-#         loss.backward()
-#         opt.step()
-#         with torch.no_grad():
-#             V_params['sigma_V'].clamp_(min=1e-6)
-#             hyperparams['var_w'].clamp_(min=1e-6)
-#             hyperparams['lengthscales'].clamp_(min=1e-6)
-#             for u in u_params:
-#                 u['sigma_noise'].clamp_(min=1e-6)
-#         if step % log_interval==0 or step==1:
-#             print(f"Step {step}/{num_steps}, ELBO={elbo.item():.4f}")
-#     return V_params, u_params, hyperparams
 def train_vi1(regions,
              V_params,
              u_params,
@@ -900,76 +734,6 @@ def predict_vi(regions,
 
     return mu_pred, var_pred
 
-import torch
-
-# def predict_vi_analytic(regions, V_params, u_params, hyperparams):
-#     """
-#     Analytic VI prediction for each region's single test point x_t.
-
-#     Returns:
-#       mu_pred: [T] tensor of predictive means
-#       sigma2:  [T] tensor of predictive variances
-#     """
-#     device = hyperparams['Z'].device
-#     T = len(regions)
-
-#     # ——— 1. 堆叠 region 相关量 ———
-#     C           = torch.stack([r['C'] for r in regions], dim=0)      # [T,m1,Q]
-#     mu_u        = torch.stack([u['mu_u'] for u in u_params], dim=0) # [T,m1]
-#     Sigma_u     = torch.stack([u['Sigma_u'] for u in u_params], dim=0) # [T,m1,m1]
-#     sigma_noise = torch.stack([u['sigma_noise'] for u in u_params], dim=0) # [T]
-
-#     # ——— 2. Unpack global variational params ———
-#     Z            = hyperparams['Z']          # [m2,D]
-#     lengthscales = hyperparams['lengthscales']
-#     var_w        = hyperparams['var_w']
-#     X_test       = hyperparams['X_test']     # [T,D]
-#     mu_V         = V_params['mu_V']          # [m2,Q,D]
-#     sigma_V      = V_params['sigma_V']       # [m2,Q,D]
-
-#     # ——— 3. q(W) 后验在测试点的均值与二阶矩 ——批量版本———
-#     mu_W, cov_W = qW_from_qV(
-#         X_test, Z, mu_V, sigma_V, lengthscales, var_w
-#     )  # mu_W:[T,Q,D], cov_W diag->[T,Q,D,D]
-
-#     # 令 X_test_n=[T,1,D] 调用 batch 期望
-#     X_test_n = X_test.unsqueeze(1)  # [T,1,D]
-#     m_W = expected_Kfu(mu_W, cov_W, X_test_n, C, sigma_noise).squeeze(1)      # [T,m1]
-#     S_W = expected_KufKfu(mu_W, cov_W, X_test_n, C, sigma_noise).squeeze(1)   # [T,m1,m1]
-
-#     # ——— 4. 构造 K_uu 及其逆 ———
-#     m1 = C.shape[1]
-#     d2 = (C.unsqueeze(2) - C.unsqueeze(1)).pow(2).sum(-1)  # [T,m1,m1]
-#     I = torch.eye(m1, device=device).unsqueeze(0)
-#     Kuu = torch.exp(-0.5 * d2) + sigma_noise.view(-1,1,1) * I  # [T,m1,m1]
-#     Luu = torch.linalg.cholesky(Kuu)                          # [T,m1,m1]
-#     Kuu_inv = torch.cholesky_inverse(Luu)                     # [T,m1,m1]
-
-#     # ——— 5. 计算 a = Kuu_inv @ mu_u ———
-#     a = torch.einsum('tij,tj->ti', Kuu_inv, mu_u)             # [T,m1]
-
-#     # ——— 6. 均值 μ_t = m_W ⋅ a ———
-#     mu_pred = (m_W * a).sum(dim=1)                            # [T]
-
-#     # ——— 7. 方差各部分 ———
-#     # V1 = σ_n^2 - trace(Kuu_inv @ S_W)
-#     V1 = sigma_noise**2 - torch.einsum('tij,tij->t', Kuu_inv, S_W)  # [T]
-
-#     # T3 = trace(Kuu_inv @ S_W @ Kuu_inv @ Sigma_u)
-#     T3 = torch.einsum('tij,tjk,tkl,tli->t',
-#                      Kuu_inv, S_W, Kuu_inv, Sigma_u)               # [T]
-
-#     # V_W = aᵀ (S_W - m_W m_Wᵀ) a
-#     diff = S_W - m_W.unsqueeze(2) * m_W.unsqueeze(1)             # [T,m1,m1]
-#     V_W = torch.einsum('ti,tij,tj->t', a, diff, a)               # [T]
-
-#     # 最终时刻方差
-#     sigma2 = V1 + T3 + V_W                                        # [T]
-
-#     return mu_pred, sigma2
-import torch
-import math
-import numpy as np
 
 # 预生成 Gauss–Hermite 节点和权重
 _GH_POINTS = 20

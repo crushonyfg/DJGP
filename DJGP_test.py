@@ -10,10 +10,6 @@ import numpy as np
 import math
 
 from utils1 import jumpgp_ld_wrapper
-# from VI_utils_gpu_acc_UZ_mean import *
-# from VI_utils_gpu_acc_UZ import *
-# from check_VI_utils_gpu_acc_UZ_qumodified_cor import *
-# from minibatch_check_VI_utils import *
 from JumpGP_test import *
 from new_minibatch_try import train_vi_minibatch
 from check_VI_utils_gpu_acc_UZ_qumodified_cor import *
@@ -198,15 +194,6 @@ def main():
             log_interval=50
         )
     else: 
-        # V_params, u_params, hyperparams = train_vi_minibatch(
-        #     regions=regions,
-        #     V_params=V_params,
-        #     u_params=u_params,
-        #     hyperparams=hyperparams,
-        #     lr=args.lr,
-        #     num_steps=num_steps,
-        #     log_interval=50
-        # )
         hyperparams_trained = train_vi_minibatch(
         regions, V_params, u_params, hyperparams,
         batch_size=args.batch_size,
