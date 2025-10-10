@@ -10,6 +10,11 @@ from active_djgp_acquisition import *
 # 需要用到：DJGPArgs, djgp_fit_predict, compute_acquisition_all_with_JGP,
 # select_topk_candidates, find_neighborhoods, evaluate_jumpgp, predict_vi
 
+import sys
+import os
+sys.path.append("D:/new_windows/PhD/autumn2025/park/codes/DJGP/ActiveJGP")  # Replace with actual path to ActiveJGP folder
+from ActiveLearner import ActiveLearner
+
 # -------------------------------
 # 1) 生成二维网格 Z（用于背景绘图）
 # -------------------------------
@@ -67,8 +72,10 @@ def generate_y_from_Z(
     Z: torch.Tensor,
     gp_model: GaussianProcessRegressor | None = None,
     a: float = 0.2,
-    k_slope: float = 25.0,
-    jump_amp: float = 1.0,
+    # k_slope: float = 25.0,
+    # jump_amp: float = 1.0,
+    k_slope: float = 50.0,
+    jump_amp: float = 2.0,
     update_posterior: bool = False
 ):
     """
@@ -457,6 +464,62 @@ def run_al_loop(
     )
     print(f"[Saved] {save_prefix}_Z_added_points.png, {save_prefix}_rmse_curves.png, {save_prefix}_data.npz")
 
+def run_al4jgp(seed=123,
+    N_train=50,
+    N_cand=200,
+    N_test=200,
+    rounds=30,
+    KNN=25,
+    save_prefix="djgp_al4jgp_4Dboundary"):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # --- 数据，用 4D 边界版本 ---
+    Z_train = torch.rand(N_train, 2, device=device)
+    Z_pool  = torch.rand(N_cand,  2, device=device)
+    Z_test  = torch.rand(N_test,  2, device=device)
+
+    y_train, gp_model = generate_y_from_Z(Z_train)
+    y_pool, _         = generate_y_from_Z(Z_pool,  gp_model)
+    y_test, _         = generate_y_from_Z(Z_test,  gp_model)
+
+    X_train = g(Z_train)
+    X_pool  = g(Z_pool)
+    X_test  = g(Z_test)
+
+    y_train_np = y_train.detach().cpu().numpy()
+    y_pool_np  = y_pool.detach().cpu().numpy()
+    y_test_np  = y_test.detach().cpu().numpy()
+
+    X_train_np = X_train.detach().cpu().numpy()
+    X_pool_np  = X_pool.detach().cpu().numpy()
+    X_test_np  = X_test.detach().cpu().numpy()
+
+    learner = ActiveLearner(
+        x=X_train_np,
+        y=y_train_np,
+        xc=X_pool_np,
+        yc=y_pool_np,
+        xt=X_test_np,
+        yt=y_test_np,
+        method_name='MAX_MSPE',  # Choose your method
+        S=rounds,  # Number of iterations
+        neighbor_num = KNN
+    )
+
+    # Run active learning
+    results = learner.run()
+
+    # Plot results
+    import matplotlib.pyplot as plt
+    plt.plot(results['rmse'])
+    plt.xlabel('Iteration')
+    plt.ylabel('RMSE')
+    plt.title('Learning Progress')
+    plt.show()
+
+
 
 # -------------------------------
 # 9) 运行入口
@@ -467,9 +530,9 @@ if __name__ == "__main__":
 
     # 通过后，直接跑 AL 实验（保留原有逻辑）
     # 你也可以注释掉上面一行，只运行下面的主动学习循环
-    run_al_loop(
+    run_al4jgp(
         seed=123,
-        N_train=50, N_cand=200, N_test=200,
-        rounds=30, KNN=25,
+        N_train=40, N_cand=200, N_test=200,
+        rounds=50, KNN=25,
         save_prefix="djgp_al_4Dboundary_knn25"
     )
