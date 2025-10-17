@@ -67,8 +67,8 @@ def generate_y_from_Z(
     Z: torch.Tensor,
     gp_model: GaussianProcessRegressor | None = None,
     a: float = 0.2,
-    k_slope: float = 25.0,
-    jump_amp: float = 1.0,
+    k_slope: float = 50.0,
+    jump_amp: float = 2.0,
     update_posterior: bool = False
 ):
     """
@@ -294,7 +294,8 @@ def run_al_loop(
     N_test=200,
     rounds=30,
     KNN=25,
-    save_prefix="djgp_al_4Dboundary"
+    save_prefix="djgp_al_4Dboundary",
+    steps = 100
 ):
     import matplotlib.pyplot as plt
 
@@ -315,7 +316,7 @@ def run_al_loop(
     X_pool  = g(Z_pool)
     X_test  = g(Z_test)
 
-    args = DJGPArgs(Q=2, m1=4, m2=20, n=KNN, num_steps=100, MC_num=8, lr=1e-2, use_batch=False)
+    args = DJGPArgs(Q=2, m1=4, m2=20, n=KNN, num_steps=steps, MC_num=8, lr=1e-2, use_batch=False)
 
     rmse_jgp_hist, crps_jgp_hist = [], []
     rmse_djg_hist, crps_djg_hist = [], []
@@ -469,7 +470,8 @@ if __name__ == "__main__":
     # 你也可以注释掉上面一行，只运行下面的主动学习循环
     run_al_loop(
         seed=123,
-        N_train=50, N_cand=200, N_test=200,
-        rounds=30, KNN=25,
-        save_prefix="djgp_al_4Dboundary_knn25"
+        N_train=40, N_cand=200, N_test=200,
+        rounds=30, KNN=15,
+        save_prefix="djgp_al_4Dboundary_knn15_start40_slope50_amp2",
+        steps=100
     )
